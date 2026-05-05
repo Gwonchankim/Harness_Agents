@@ -55,27 +55,33 @@ Project (도메인/주제)
 
 날짜 필드는 ISO 8601 UTC. 예: `2026-05-05T09:30:00Z`.
 
+> **SQLite 제약**: Prisma + SQLite는 `String[]` 같은 scalar list를 지원하지 않는다. 아래 표기 중 array 형태(`tags`, `toolsAllowed`, `dependencies` 등)는 **모두 `Json` 타입으로 저장**(Prisma `Json`, 내부값은 `string[]`). `payload`/`args`/`result`/`options`는 처음부터 `Json`. 자세한 적용은 본 문서 하단 **Implementation Revisions (Pre-Build) #5** 참조.
+
 ```
-Project          id, name, description, tags[], createdAt
-Team             id, projectId, name, domain, tags[], leadAgentId, currentRevisionId, score, runCount
-TeamRevision     id, teamId, version, agentsMdSnapshot, teamJsonSnapshot, sourceRunId, feedbackId, changedBy, reason, createdAt
-Agent            id, teamId, name, role, modelId, systemPrompt, toolsAllowed[], score, createdAt
-Run              id, teamId, projectId, userPrompt, status, startedAt, completedAt
-QaSession        id, runId, status (collecting | done)
-QaQuestion       id, qaSessionId, ordinal, prompt, options(JSON, 6개), status (active | answered | stale)
-QaAnswer         id, questionId, choiceIndex, customText, isAutoJudged
-ExecutionPlan    id, runId, dagJson
-Task             id, planId, taskKey, title, assignedAgentId, description, dependencies[], expectedOutput, status, result, error, startedAt, completedAt
-RunEvent         id, runId, type, payload(JSON), createdAt   -- append-only
-ToolCall         id, taskId, agentId, tool, args(JSON), result(JSON), reason, createdAt
-Artifact         id, runId, taskId, path, kind, sizeBytes
-Feedback         id, runId, kind (result | agent), targetAgentId?, score(1-5), customText, createdAt
-AgentRating      id, agentId, runId, score, createdAt    -- 최종 평가
-ModelCatalog     id, displayName, provider, modelId, endpointType, costTier, speedTier, enabled, recommendedUse
-SecretStore      id, key, encryptedValue, masked, createdAt    -- keychain 사용 시 비어있음
+Project           id, name, description, tags(Json:string[]), createdAt
+Team              id, projectId, name, domain, tags(Json:string[]), leadAgentId, currentRevisionId, score, runCount
+TeamRevision      id, teamId, version, agentsMdSnapshot, teamJsonSnapshot,
+                  sourceRunId, feedbackBatchId?, proposedBy, approvedBy, reason, createdAt
+Agent             id, teamId, name, role, modelId, systemPrompt, toolsAllowed(Json:string[]), score, createdAt
+Run               id, teamId, projectId, userPrompt, status, startedAt, completedAt
+QaSession         id, runId, status (collecting | done)
+QaQuestion        id, qaSessionId, ordinal, prompt, options(Json, 6개), status (active | answered | stale)
+QaAnswer          id, questionId, choiceIndex, customText, isAutoJudged
+ExecutionPlan     id, runId, dagJson(Json)
+Task              id, planId, taskKey, title, assignedAgentId, description,
+                  dependencies(Json:string[]), expectedOutput, status, result, error, startedAt, completedAt
+RunEvent          id, runId, type, payloadSummary(Json, ≤capped), payloadArtifactId?, createdAt   -- append-only
+ToolCall          id, taskId, agentId, tool, argsSummary(Json, ≤capped), resultSummary(Json, ≤capped),
+                  argsArtifactId?, resultArtifactId?, reason, createdAt
+Artifact          id, runId, taskId?, path, kind, sizeBytes
+FeedbackBatch     id, runId, createdAt    -- result feedback + agent별 feedback을 하나의 batch로 묶음
+Feedback          id, runId, batchId, kind (result | agent), targetAgentId?, score(1-5), customText, createdAt
+AgentRating       id, agentId, runId, score, createdAt    -- 최종 평가
+ModelCatalog      id, displayName, provider, modelId, endpointType, costTier, speedTier, enabled, recommendedUse
+SecretStore       id, key, encryptedValue, masked, createdAt    -- keychain 사용 시 비어있음
 ```
 
-`run_events`는 append-only이며 SSE 이벤트 소스 + 새로고침 시 재생용.
+`run_events`는 append-only이며 SSE 이벤트 소스 + 새로고침 시 재생용. payload가 커질 경우(token delta 누적, tool result 등) DB에는 capped 요약만 두고 본문은 `Artifact`로 분리한다 (Revisions #12).
 
 ---
 
@@ -324,3 +330,108 @@ Harness_Agents/
 - `models.json` 시드
 - `.env.example`
 - `README.md`
+
+---
+
+## Implementation Revisions (Pre-Build)
+
+> 사용자 승인일 2026-05-05. 본 섹션의 항목들은 위 본문과 충돌 시 **여기 우선**한다.
+
+### 1. Prisma migrations are committed
+- `apps/web/prisma/migrations/` 디렉토리는 **반드시 git에 커밋한다.** `.gitignore`에 `prisma/migrations/*` 패턴을 넣지 않는다.
+- DB 파일만 ignore: `dev.db`, `*.db-journal`, `*.db-wal`, `*.db-shm`.
+- `.gitignore`는 다음 경로만 ignore: `node_modules/`, `.next/`, `.env`, `.env.local`, `*.db`, `*.db-journal`, `*.db-wal`, `*.db-shm`, `projects/`, `.DS_Store`.
+
+### 2. DATABASE_URL is schema-relative
+- `apps/web/prisma/schema.prisma` 기준으로 **`DATABASE_URL=file:./dev.db`** 사용. 실제 위치: `apps/web/prisma/dev.db`.
+- `file:./apps/web/prisma/dev.db` 는 **금지** — 실행 cwd에 따라 nested path 가 됨.
+- `.env.example`에 위 값으로 작성하고 README의 setup 단계에 명시한다.
+
+### 3. Next.js 16 — `typedRoutes` is stable
+- `next.config.ts`에 `experimental.typedRoutes` 가 아니라 **루트 레벨 `typedRoutes: true`** 사용.
+
+### 4. Default Project for `/runs/new`
+- MVP에서는 첫 부팅/마이그레이션 시 자동으로 `Default Project` 1개 생성 (예: seed).
+- `/runs/new`는 별도 Project 선택 UI 없이 새 Run을 자동으로 Default Project에 귀속.
+- Project 선택/생성 UI는 Phase 7(Polish) 또는 그 이후 add. Schema는 그대로 유지(이미 `Run.projectId` 존재).
+
+### 5. SQLite scalar lists → `Json`
+- Prisma + SQLite는 `String[]` 같은 native list를 **지원하지 않는다.** Phase 0 migration이 깨지지 않도록 다음 필드는 모두 `Json` 타입으로 정의하고 내부값은 `string[]`로 직렬화:
+  - `Project.tags`, `Team.tags`, `Agent.toolsAllowed`, `Task.dependencies`
+- 처음부터 `Json`인 필드: `QaQuestion.options`, `RunEvent.payloadSummary`, `ToolCall.argsSummary` / `resultSummary`, `ExecutionPlan.dagJson`.
+- TypeScript 레이어에 `parseStringArray(json)` / `stringifyStringArray(arr)` helper 두고 모델 경계에서 변환.
+- **Phase 0 게이트**: `pnpm prisma migrate dev` 가 깨끗이 통과하는 것을 Phase 0 종료 조건으로 한다. 통과하지 못하면 Phase 1로 넘어가지 않는다.
+
+### 6. Ollama provider — fixed choice
+- 패키지명 `ollama-ai-provider` 는 모호하므로 다음 중 **하나로 고정**:
+  - **1순위 (기본):** `@ai-sdk/openai-compatible` + Ollama OpenAI 호환 엔드포인트 `http://localhost:11434/v1`
+  - **2순위 (필요시):** AI SDK community provider `ollama-ai-provider-v2` 또는 `ai-sdk-ollama`
+- availability check 는 native Ollama `GET /api/tags` 사용 (OpenAI 호환 경로보다 가볍고 정확).
+- `apps/web/src/lib/providers/ollama.ts` 상단 주석에 어느 옵션을 선택했는지/이유 기록.
+
+### 7. Split `runtime.complete`
+- 단일 `runtime.complete` 함수로 묶지 않고 다음 3개로 분리:
+  - `runtime.streamText({ model, messages, tools? })` — 토큰 스트리밍
+  - `runtime.generateObject({ model, schema, messages })` — Zod 스키마 기반 structured output. PO Q&A 다음 질문 생성 / Team Composition / DAG plan / feedback diff 제안에 사용.
+  - `runtime.checkModelAvailability(modelId)` — provider 별 ping (Ollama `/api/tags`, OpenAI `/v1/models`, Anthropic `/v1/models`)
+- 위 3개는 `apps/web/src/lib/agents/runtime.ts`에서 export.
+
+### 8. Separate workspace export from Agent tools
+- `markdown.writeReport` 같은 Agent tool로 시스템 산출물을 쓰지 **않는다.**
+- 별도 계층 `apps/web/src/lib/workspace/exportService.ts` (`WorkspaceExportService`) 신설. 다음 파일 생성/갱신은 모두 이 계층에서:
+  - `AGENTS.md`, `team.json`, `run.json`, `plan.md`, `result.md`, `report.md`, `agent-reports/{agentId}.md`
+- Agent가 직접 호출한 도구만 `ToolCall` 테이블에 기록. 시스템 export는 `RunEvent` 의 `system.export.*` 타입으로 별도 audit 이벤트에 기록 (`type=system.export.written`, `payloadSummary={path, kind, sizeBytes}`).
+- Tool registry 의 `markdown.writeReport` 는 **삭제** 또는 agent-facing 메모 작성 전용으로 좁힘 (sandbox 내부 노트만).
+
+### 9. Feedback batching
+- Run 종료 시 result feedback 1개 + agent별 feedback N개가 한 번에 들어옴 → **`FeedbackBatch`** 모델 신설.
+- `Feedback.batchId` (FK → `FeedbackBatch.id`) 추가. 같은 batchId 의 feedback 들이 한 묶음.
+- `TeamRevision.feedbackBatchId` (`FeedbackBatch.id`) 로 연결. 단일 `feedbackId` 는 폐기.
+
+### 10. TeamRevision provenance
+- `TeamRevision`은 다음 필드를 가짐:
+  - `proposedBy` (`'lead-agent' | 'po-agent' | 'user'`)
+  - `approvedBy` (`'user'` — 항상 사람의 승인이 있어야 새 revision 생성)
+  - `sourceRunId`
+  - `feedbackBatchId?`
+  - `reason` (자유 텍스트, Lead의 변경 이유 또는 사용자 메모)
+- `RunEvent`에는 `team.revision.proposed` (Lead diff 생성 시) 와 `team.revision.approved` (사용자 승인 시) 가 모두 기록되어 감사 가능.
+
+### 11. Secret fallback security disclosure
+- keytar 우선, 실패 시 AES-GCM + `~/.harness-agents/secret.key` (또는 OS app data) fallback. **이는 강한 보안이 아니라 "local obfuscation fallback" 수준.**
+- README와 Settings UI 의 Secret 섹션에 **명시적으로 표시**: "Local fallback only — not strong encryption. Production use should rely on OS keychain (keytar)."
+- POSIX: 키 파일 `0600` 시도. **Windows**: chmod 0600 은 의미 없음 → keytar(Credential Manager) 우선 사용 강제. keytar 실패 시 Windows ACL `icacls` 로 현재 사용자만 읽기 가능하게 시도하고, 실패해도 앱은 동작하되 UI에 경고 노출.
+- 로그/run_events redaction 은 secret 값에 한정.
+
+### 12. RunEvent / ToolCall payload size limits
+- DB row 의 payload 는 **고정 cap (예: 4 KB)** 를 넘지 않도록 enforce:
+  - 토큰 streaming delta: row 마다 누적하지 않고 **rolling window**(예: 256 chars) 만 저장. 전체 출력은 task 종료 시 `Artifact` 로 dump.
+  - tool result: `result` 가 1 KB 초과 시 `resultSummary`(첫/끝 N자 + size) 만 저장하고 본문은 `Artifact` 로 분리.
+- 신규 `Artifact.kind`: `event-payload`, `toolcall-args`, `toolcall-result`.
+- `RunEvent.payloadArtifactId` / `ToolCall.{args,result}ArtifactId` (nullable) 로 연결.
+
+### 13. SQLite WAL
+- 앱 부팅 시(또는 Prisma `$connect` 직후) `PRAGMA journal_mode=WAL;`, `PRAGMA synchronous=NORMAL;`, `PRAGMA busy_timeout=5000;` 적용.
+- 위치: `apps/web/src/lib/db/client.ts` Prisma client wrapper의 init.
+- `*.db-wal`, `*.db-shm` 는 `.gitignore` 대상 (Revisions #1).
+
+### 14. In-memory queue scope
+- Phase 4 의 in-memory queue 는 **local single-process MVP 전용.**
+- Next dev/HMR 또는 프로세스 재시작 시 in-flight Run 은 시작 시 `status='failed'`(`error='process_restart'`) 로 마킹 후 사용자에게 재시도 옵션 노출.
+- `apps/web/src/lib/queue/inMemory.ts` 상단 주석에 다음 명시:
+  ```
+  // SCOPE: Local MVP only. Single Node process, in-memory queue.
+  // SaaS/deployment MUST replace this with BullMQ + Redis (or similar
+  // durable queue) before serving multiple users or surviving restarts.
+  ```
+- Queue 인터페이스(`QueueDriver`)만 분리해두면 교체 시 호출부 변경 없음.
+
+---
+
+### Phase 0 acceptance gate (revised)
+
+Phase 0 종료 조건에 다음 추가:
+- `pnpm prisma migrate dev --name init` 이 깨끗이 통과 (Revisions #5)
+- `apps/web/prisma/migrations/<timestamp>_init/` 가 git에 커밋됨 (Revisions #1)
+- 부팅 직후 SQLite `PRAGMA journal_mode` 가 `wal` 로 보고됨 (Revisions #13)
+- `Default Project` row 가 seed 단계에서 자동 생성됨 (Revisions #4)
