@@ -1,0 +1,405 @@
+// Harness Agents — Phase 0 schema.
+//
+// Conventions:
+//   - SQLite scalar lists are NOT used. Anything array/object-shaped is stored
+//     as `String` containing JSON.stringify'd content (the "stringified JSON
+//     fallback" called out in the implementation revisions). Prisma 5 + SQLite
+//     does not yet support the native `Json` type.
+//   - status / kind / provider are plain strings for migration stability
+//     (we'd rather avoid Prisma enum migrations on SQLite).
+//   - DateTime everywhere for time fields.
+//   - DB is the source of truth; markdown/JSON exports live in workspace files.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Project / Team
+// ---------------------------------------------------------------------------
+
+model Project {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique
+  description String?
+  isDefault   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  teams Team[]
+  runs  Run[]
+}
+
+model Team {
+  id                String   @id @default(cuid())
+  projectId         String
+  name              String
+  description       String?
+  domain            String?  // free-form domain label, e.g. "research", "writing"
+  tags              String   @default("[]") // JSON-encoded string[]
+  status            String   @default("draft") // draft | active | archived
+  leadAgentId       String?  // pointer to the current Lead Agent (must belong to this Team)
+  currentRevisionId String?  // pointer to the latest approved TeamRevision
+  score             Float?   // running quality signal from feedback
+  runCount          Int      @default(0)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  project         Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  agents          Agent[]
+  runs            Run[]
+  revisions       TeamRevision[]
+  leadAgent       Agent?         @relation("TeamLeadAgent", fields: [leadAgentId], references: [id])
+  currentRevision TeamRevision?  @relation("TeamCurrentRevision", fields: [currentRevisionId], references: [id])
+
+  @@index([projectId])
+  @@index([leadAgentId])
+  @@index([currentRevisionId])
+}
+
+model TeamRevision {
+  id              String    @id @default(cuid())
+  teamId          String
+  version         Int
+  agentsSnapshot  String   // JSON-encoded
+  agentsMd        String
+  teamJson        String   // JSON-encoded
+  proposedBy      String
+  approvedBy      String?
+  sourceRunId     String?
+  feedbackBatchId String?
+  reason          String?
+  createdAt       DateTime  @default(now())
+  approvedAt      DateTime?
+
+  team          Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  sourceRun     Run?           @relation("RunSourcedRevisions", fields: [sourceRunId], references: [id])
+  feedbackBatch FeedbackBatch? @relation(fields: [feedbackBatchId], references: [id])
+  currentOf     Team[]         @relation("TeamCurrentRevision")
+
+  @@unique([teamId, version])
+  @@index([teamId])
+  @@index([sourceRunId])
+  @@index([feedbackBatchId])
+}
+
+// ---------------------------------------------------------------------------
+// Agent
+// ---------------------------------------------------------------------------
+
+model Agent {
+  id           String   @id @default(cuid())
+  teamId       String
+  name         String
+  role         String
+  isLead       Boolean  @default(false)
+  systemPrompt String
+  modelId      String
+  provider     String
+  toolsAllowed String   // JSON-encoded string[]
+  tags         String   // JSON-encoded string[]
+  options      String?  // JSON-encoded object
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  team      Team          @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  leadOf    Team[]        @relation("TeamLeadAgent")
+  tasks     Task[]
+  toolCalls ToolCall[]
+  feedback  Feedback[]
+  ratings   AgentRating[]
+  events    RunEvent[]
+
+  @@index([teamId])
+  @@index([modelId])
+}
+
+// ---------------------------------------------------------------------------
+// Run / QA / Plan / Task
+// ---------------------------------------------------------------------------
+
+model Run {
+  id           String    @id @default(cuid())
+  projectId    String
+  teamId       String?
+  prompt       String
+  status       String    @default("pending")
+  failedReason String?
+  startedAt    DateTime?
+  endedAt      DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  project          Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  team             Team?           @relation(fields: [teamId], references: [id])
+  qaSession        QaSession?
+  plan             ExecutionPlan?
+  tasks            Task[]
+  events           RunEvent[]
+  toolCalls        ToolCall[]
+  artifacts        Artifact[]
+  feedbackBatches  FeedbackBatch[]
+  sourcedRevisions TeamRevision[]  @relation("RunSourcedRevisions")
+
+  @@index([projectId])
+  @@index([teamId])
+  @@index([status])
+}
+
+model QaSession {
+  id        String   @id @default(cuid())
+  runId     String   @unique
+  status    String   @default("active")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  run       Run          @relation(fields: [runId], references: [id], onDelete: Cascade)
+  questions QaQuestion[]
+  answers   QaAnswer[]
+}
+
+model QaQuestion {
+  id        String    @id @default(cuid())
+  sessionId String
+  order     Int
+  prompt    String
+  kind      String    // single | multi | free
+  options   String    // JSON-encoded option list (always 6 entries in MVP)
+  status    String    @default("active") // active | stale | superseded
+  staleAt   DateTime? // set when an upstream answer edit invalidated this question
+  createdAt DateTime  @default(now())
+
+  session QaSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  answers QaAnswer[]
+
+  @@unique([sessionId, order])
+  @@index([sessionId])
+  @@index([status])
+}
+
+model QaAnswer {
+  id           String   @id @default(cuid())
+  sessionId    String
+  questionId   String
+  // 1..4 = generated choice, 5 = AI auto-judge, 6 = custom input. Null when
+  // the answer is a multi-select array stored entirely in `value`.
+  choiceIndex  Int?
+  customText   String?  // present when choiceIndex == 6
+  value        String   // JSON-encoded canonical answer value
+  isAutoJudged Boolean  @default(false) // true when option 5 (AI auto-judge) drove the answer
+  createdAt    DateTime @default(now())
+
+  session  QaSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question QaQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, questionId])
+  @@index([sessionId])
+  @@index([isAutoJudged])
+}
+
+model ExecutionPlan {
+  id        String   @id @default(cuid())
+  runId     String   @unique
+  dagJson   String   // JSON-encoded DAG
+  rationale String?
+  createdAt DateTime @default(now())
+
+  run   Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  tasks Task[]
+}
+
+model Task {
+  id             String    @id @default(cuid())
+  runId          String
+  planId         String?   // every task in MVP belongs to one ExecutionPlan, but kept optional
+                           //  to allow ad-hoc / future-side tasks without a Lead-generated plan.
+  agentId        String?
+  taskKey        String    // Lead-defined stable key, unique within a plan. Used in DAG dependencies.
+  name           String
+  description    String
+  expectedOutput String?   // contract the Lead expects this task to satisfy
+  status         String    @default("pending") // pending | running | blocked | done | failed
+  dependencies   String    @default("[]") // JSON-encoded string[] of upstream taskKeys
+  inputs         String?   // JSON-encoded inputs handed to the agent
+  result         String?   // JSON-encoded canonical result on success
+  error          String?   // human-readable error summary on failure (redacted)
+  startedAt      DateTime?
+  completedAt    DateTime? // set when task reaches a terminal state (done or failed)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  run       Run            @relation(fields: [runId], references: [id], onDelete: Cascade)
+  plan      ExecutionPlan? @relation(fields: [planId], references: [id], onDelete: Cascade)
+  agent     Agent?         @relation(fields: [agentId], references: [id])
+  toolCalls ToolCall[]
+  artifacts Artifact[]
+  events    RunEvent[]
+
+  @@unique([planId, taskKey])
+  @@index([runId])
+  @@index([planId])
+  @@index([agentId])
+  @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Events / ToolCalls / Artifacts
+// ---------------------------------------------------------------------------
+
+model RunEvent {
+  id         String   @id @default(cuid())
+  runId      String
+  taskId     String?
+  agentId    String?
+  type       String
+  payload    String   // JSON-encoded
+  artifactId String?
+  createdAt  DateTime @default(now())
+
+  run      Run       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  task     Task?     @relation(fields: [taskId], references: [id])
+  agent    Agent?    @relation(fields: [agentId], references: [id])
+  artifact Artifact? @relation(fields: [artifactId], references: [id])
+
+  @@index([runId, createdAt])
+  @@index([taskId])
+  @@index([agentId])
+}
+
+model ToolCall {
+  id        String    @id @default(cuid())
+  runId     String
+  taskId    String?
+  agentId   String?
+  toolName  String
+  args      String   // JSON-encoded (redacted)
+  result    String?  // JSON-encoded (redacted)
+  status    String    @default("pending")
+  startedAt DateTime?
+  endedAt   DateTime?
+  createdAt DateTime  @default(now())
+
+  run   Run    @relation(fields: [runId], references: [id], onDelete: Cascade)
+  task  Task?  @relation(fields: [taskId], references: [id])
+  agent Agent? @relation(fields: [agentId], references: [id])
+
+  @@index([runId])
+  @@index([taskId])
+  @@index([agentId])
+}
+
+model Artifact {
+  id        String   @id @default(cuid())
+  runId     String
+  taskId    String?
+  kind      String
+  path      String
+  mimeType  String   @default("text/markdown")
+  bytes     Int      @default(0)
+  sha256    String?
+  createdAt DateTime @default(now())
+
+  run    Run        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  task   Task?      @relation(fields: [taskId], references: [id])
+  events RunEvent[]
+
+  @@index([runId])
+  @@index([taskId])
+  @@index([kind])
+}
+
+// ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+model FeedbackBatch {
+  id            String   @id @default(cuid())
+  runId         String
+  resultRating  Int?
+  resultComment String?
+  createdAt     DateTime @default(now())
+
+  run       Run            @relation(fields: [runId], references: [id], onDelete: Cascade)
+  feedback  Feedback[]
+  ratings   AgentRating[]
+  revisions TeamRevision[]
+
+  @@index([runId])
+}
+
+model Feedback {
+  id        String   @id @default(cuid())
+  batchId   String
+  agentId   String?
+  kind      String
+  rating    Int?
+  comment   String?
+  createdAt DateTime @default(now())
+
+  batch FeedbackBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  agent Agent?        @relation(fields: [agentId], references: [id])
+
+  @@index([batchId])
+  @@index([agentId])
+}
+
+model AgentRating {
+  id        String   @id @default(cuid())
+  batchId   String
+  agentId   String
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  batch FeedbackBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  agent Agent         @relation(fields: [agentId], references: [id])
+
+  @@unique([batchId, agentId])
+  @@index([batchId])
+  @@index([agentId])
+}
+
+// ---------------------------------------------------------------------------
+// Model catalog & secrets
+// ---------------------------------------------------------------------------
+
+model ModelCatalog {
+  id              String   @id @default(cuid())
+  modelId         String   @unique // canonical provider model identifier (e.g. "claude-sonnet-4-6")
+  displayName     String   // human-readable label shown in UI
+  provider        String   // openai | anthropic | ollama
+  endpointType    String   @default("openai-compat") // chat | responses | openai-compat | anthropic | ollama
+  costTier        String   @default("standard") // free | low | standard | premium
+  speedTier       String   @default("standard") // fast | standard | slow
+  enabled         Boolean  @default(true)
+  recommendedUse  String?  // short hint about when to pick this model
+  contextWindow   Int?
+  maxOutputTokens Int?
+  supportsTools   Boolean  @default(true)
+  isDefault       Boolean  @default(false)
+  metadata        String?  // JSON-encoded extras
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([provider])
+  @@index([enabled])
+}
+
+model SecretStore {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  provider  String
+  storage   String
+  keyRef    String
+  encrypted String?
+  iv        String?
+  tag       String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

@@ -1,0 +1,25 @@
+{
+  "name": "harness-agents",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Harness Agents — local-first multi-agent workspace MVP",
+  "engines": {
+    "node": ">=20.9.0",
+    "pnpm": ">=9"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "start": "pnpm --filter web start",
+    "lint": "pnpm --filter web lint",
+    "typecheck": "pnpm --filter web typecheck",
+    "db:migrate": "pnpm --filter web prisma migrate dev",
+    "db:seed": "pnpm --filter web prisma db seed",
+    "db:studio": "pnpm --filter web prisma studio"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  }
+}

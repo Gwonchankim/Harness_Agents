@@ -1,0 +1,91 @@
+{
+  "$schema": "./models.schema.json",
+  "version": 2,
+  "models": [
+    {
+      "modelId": "claude-sonnet-4-6",
+      "displayName": "Claude Sonnet 4.6",
+      "provider": "anthropic",
+      "endpointType": "anthropic",
+      "costTier": "standard",
+      "speedTier": "fast",
+      "recommendedUse": "Default balanced model for PO Q&A, Lead planning, and general agent work.",
+      "contextWindow": 200000,
+      "maxOutputTokens": 8192,
+      "supportsTools": true,
+      "default": true
+    },
+    {
+      "modelId": "claude-opus-4-7",
+      "displayName": "Claude Opus 4.7",
+      "provider": "anthropic",
+      "endpointType": "anthropic",
+      "costTier": "premium",
+      "speedTier": "standard",
+      "recommendedUse": "Heavy reasoning, large synthesis, or DAG planning that requires careful tradeoffs.",
+      "contextWindow": 200000,
+      "maxOutputTokens": 8192,
+      "supportsTools": true
+    },
+    {
+      "modelId": "claude-haiku-4-5-20251001",
+      "displayName": "Claude Haiku 4.5",
+      "provider": "anthropic",
+      "endpointType": "anthropic",
+      "costTier": "low",
+      "speedTier": "fast",
+      "recommendedUse": "Fast cheap calls — auto-judge, redaction checks, lightweight tools.",
+      "contextWindow": 200000,
+      "maxOutputTokens": 8192,
+      "supportsTools": true
+    },
+    {
+      "modelId": "gpt-4o",
+      "displayName": "GPT-4o",
+      "provider": "openai",
+      "endpointType": "chat",
+      "costTier": "standard",
+      "speedTier": "fast",
+      "recommendedUse": "Balanced OpenAI option for general agent work.",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsTools": true
+    },
+    {
+      "modelId": "gpt-4o-mini",
+      "displayName": "GPT-4o mini",
+      "provider": "openai",
+      "endpointType": "chat",
+      "costTier": "low",
+      "speedTier": "fast",
+      "recommendedUse": "Cheap PO/Lead helper or per-task summarization.",
+      "contextWindow": 128000,
+      "maxOutputTokens": 16384,
+      "supportsTools": true
+    },
+    {
+      "modelId": "llama3.1:8b",
+      "displayName": "Llama 3.1 8B (local)",
+      "provider": "ollama",
+      "endpointType": "openai-compat",
+      "costTier": "free",
+      "speedTier": "standard",
+      "recommendedUse": "Offline experimentation when no provider keys are present.",
+      "contextWindow": 128000,
+      "maxOutputTokens": 4096,
+      "supportsTools": true
+    },
+    {
+      "modelId": "qwen2.5:7b",
+      "displayName": "Qwen 2.5 7B (local)",
+      "provider": "ollama",
+      "endpointType": "openai-compat",
+      "costTier": "free",
+      "speedTier": "standard",
+      "recommendedUse": "Offline tool-friendly local model.",
+      "contextWindow": 32768,
+      "maxOutputTokens": 4096,
+      "supportsTools": true
+    }
+  ]
+}
