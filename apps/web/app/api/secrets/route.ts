@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 
+import { invalidateProviderAvailability } from '@lib/models/catalog';
 import {
   getStorageBackend,
   isAllowedSecretName,
   listSecrets,
+  SECRET_NAME_TO_PROVIDER,
   setSecret,
 } from '@lib/secrets/store';
 
@@ -34,6 +36,9 @@ export async function POST(request: Request) {
   }
   try {
     const result = await setSecret(name, value);
+    // The new key may unblock or change the auth status of the affected
+    // provider; drop the cached availability so the next probe is fresh.
+    invalidateProviderAvailability(SECRET_NAME_TO_PROVIDER[name]);
     return NextResponse.json({ ok: true, storage: result.storage });
   } catch (err) {
     return NextResponse.json(

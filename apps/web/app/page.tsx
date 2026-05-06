@@ -6,10 +6,10 @@ export default function HomePage() {
       <div className="space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight">Harness Agents</h1>
         <p className="max-w-2xl opacity-70">
-          Local-first multi-agent workspace. Phase 1 wires up the agent runtime
-          foundation: provider keys (with masked storage), the seeded model catalog,
-          per-provider availability checks, and the settings editor. The PO Q&A flow,
-          team builder, and Lead DAG planner land in later phases.
+          Local-first multi-agent workspace. Phase 2 adds the PO Q&A flow on top of the
+          Phase 1 runtime foundation: enter a prompt, pick a PO model, and answer 5–6
+          dynamic clarification questions (with edit + regenerate). Team composition,
+          Lead DAG, and reports land in later phases.
         </p>
       </div>
 
@@ -28,11 +28,17 @@ export default function HomePage() {
           </Link>
         </li>
         <li className="rounded-lg border border-current/15 p-5">
-          <h2 className="text-base font-medium">Coming next</h2>
+          <h2 className="text-base font-medium">Start a new run</h2>
           <p className="mt-1 text-sm opacity-70">
-            Prompt input → PO Q&A cards → team builder → Lead DAG → run progress (SSE) →
-            result &amp; report &amp; agent reports → feedback &amp; team revision proposals.
+            Enter a prompt, pick a PO model, and walk through 5–6 dynamic
+            clarification cards. Auto-judge or custom answers supported.
           </p>
+          <Link
+            href="/runs/new"
+            className="mt-3 inline-block text-sm font-medium underline underline-offset-4"
+          >
+            New run →
+          </Link>
         </li>
       </ul>
     </section>

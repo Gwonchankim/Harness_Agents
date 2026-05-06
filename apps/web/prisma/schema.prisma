@@ -131,6 +131,7 @@ model Run {
   prompt       String
   status       String    @default("pending")
   failedReason String?
+  poModelId    String?   // ModelCatalog.modelId chosen by the user at /runs/new
   startedAt    DateTime?
   endedAt      DateTime?
   createdAt    DateTime  @default(now())
@@ -165,15 +166,17 @@ model QaSession {
 }
 
 model QaQuestion {
-  id        String    @id @default(cuid())
-  sessionId String
-  order     Int
-  prompt    String
-  kind      String    // single | multi | free
-  options   String    // JSON-encoded option list (always 6 entries in MVP)
-  status    String    @default("active") // active | stale | superseded
-  staleAt   DateTime? // set when an upstream answer edit invalidated this question
-  createdAt DateTime  @default(now())
+  id            String    @id @default(cuid())
+  sessionId     String
+  order         Int
+  prompt        String
+  kind          String    // single | multi | free
+  options       String    // JSON-encoded option list (always 6 entries in MVP)
+  status        String    @default("active") // active | stale | superseded
+  staleAt       DateTime? // set when an upstream answer edit invalidated this question
+  regeneratedAt DateTime? // set when this question's prompt/options were regenerated. Used to gate stale answers in the UI.
+  isFinal       Boolean   @default(false) // true when the PO model signals this is the last question needed
+  createdAt     DateTime  @default(now())
 
   session QaSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   answers QaAnswer[]
@@ -194,6 +197,9 @@ model QaAnswer {
   value        String   // JSON-encoded canonical answer value
   isAutoJudged Boolean  @default(false) // true when option 5 (AI auto-judge) drove the answer
   createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  // Phase 2 stale-answer gate: an answer is "current" iff
+  // updatedAt >= question.regeneratedAt (with regeneratedAt == null treated as 0).
 
   session  QaSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   question QaQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)

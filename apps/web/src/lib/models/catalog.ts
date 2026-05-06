@@ -9,7 +9,8 @@
 import { prisma } from '@db/client';
 
 import { checkProviderAvailability } from '@lib/agents/runtime';
-import type { AvailabilityResult } from '@lib/providers';
+import type { AvailabilityResult, ProviderName } from '@lib/providers';
+import { isProviderName } from '@lib/providers';
 
 const AVAILABILITY_TTL_MS = 60_000;
 
@@ -39,6 +40,40 @@ export async function getModelOrThrow(modelId: string) {
   const row = await prisma.modelCatalog.findUnique({ where: { modelId } });
   if (!row) throw new Error(`ModelCatalog row not found for modelId=${modelId}`);
   return row;
+}
+
+/**
+ * Like getModelOrThrow, but also rejects rows where enabled=false. Use this on
+ * Run creation so the user can't pin a Run to a model that has been disabled.
+ */
+export async function getEnabledModelOrThrow(modelId: string) {
+  const row = await getModelOrThrow(modelId);
+  if (!row.enabled) {
+    throw new ModelDisabledError(modelId);
+  }
+  return row;
+}
+
+export class ModelDisabledError extends Error {
+  constructor(public readonly modelId: string) {
+    super(`ModelCatalog row is disabled for modelId=${modelId}`);
+    this.name = 'ModelDisabledError';
+  }
+}
+
+/**
+ * Safely narrow a ModelCatalog.provider string to ProviderName. Returns null
+ * (rather than throwing) so callers can decide between 503 and 500 mapping.
+ */
+export function resolveProviderName(value: string): ProviderName | null {
+  return isProviderName(value) ? value : null;
+}
+
+export class UnknownProviderError extends Error {
+  constructor(public readonly provider: string) {
+    super(`ModelCatalog provider is not a known runtime provider: ${provider}`);
+    this.name = 'UnknownProviderError';
+  }
 }
 
 /** Provider-level availability with TTL cache. Errors do not propagate. */
@@ -79,4 +114,13 @@ export async function getAvailabilityMap(): Promise<Record<string, AvailabilityR
 
 export function clearAvailabilityCacheForTests() {
   availabilityCache.clear();
+}
+
+/**
+ * Forget the cached availability for a single provider so the next probe runs
+ * for real. Call this after a secret save/delete or after an auth-shaped
+ * generateObject failure so the UI/runtime sees the new state immediately.
+ */
+export function invalidateProviderAvailability(provider: string): void {
+  availabilityCache.delete(provider);
 }

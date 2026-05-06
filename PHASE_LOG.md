@@ -14,6 +14,8 @@ Update this file at the end of each Phase.
 - Phase 0 implemented and verified locally on 2026-05-05.
 - Phase 0 correction pass applied and re-verified on 2026-05-05 (schema alignment with `PLAN.md` / `IMPLEMENTATION.md`, `safeJoin` added).
 - Phase 1 (Providers, Tools, Secrets) implemented and verified locally on 2026-05-06.
+- Phase 2 (PO Q&A) implemented and verified locally on 2026-05-06.
+- Phase 2 correction pass applied and re-verified on 2026-05-06 (stale-pending gate, isEdit fix, sessionState test file, inline UI hint).
 - Awaiting commit/push by user (user owns git ops).
 
 ## Phase Workflow
@@ -270,25 +272,186 @@ Root:
 
 ## Phase 2 — PO Q&A
 
-Status: Not started
+Status: Completed (2026-05-06) + correction pass applied (2026-05-06)
+
+### Phase 2 Correction Pass (2026-05-06)
+
+A review surfaced two correctness gaps, one missing test file, and one UI gap. All fixed before commit. No schema change, no new dependencies, no migration.
+
+**Issues fixed**
+
+1. **`isEdit` underflagged re-answers.** Old check `view.questions.some(q => q.order > question.order && q.answer != null)` only fired when downstream questions had answers. New check fires whenever the current question already has an answer AND any downstream question exists (answered or not) — so re-answering Q3 also stales an unanswered Q4/Q5 that the next/regenerate path would otherwise leave intact.
+2. **`/api/qa/[sessionId]/next` could create a new question while stale ones were pending.** Added an early `findLowestStaleOrder(view)` check: if stale questions exist and the request omitted `regenerateOrder`, the route now returns `409 { error: 'stale_questions_pending', lowestStaleOrder }`. Prevents creating Q6 while Q3..Q5 are stale.
+3. **`sessionState.test.ts` was missing** from the Phase 2 plan and never landed. Now in place with 19 cases covering the gate (`isCurrentAnswer`), current-question derivation, stale detection, lowest-stale lookup, and the auto-complete rule.
+4. **`<QaFlow>` only had a generic error display for the new 409.** Added an inline amber notice — "Regenerate stale questions before continuing" — and gated the active question card so the user is steered to the Timeline's Regenerate buttons instead of being shown the stale question's old content.
+
+**Files touched**
+
+- `apps/web/src/lib/qa/sessionState.ts` — extracted pure helpers `isCurrentAnswer`, `deriveCurrentQuestion`, `findStaleQuestions`, `findLowestStaleOrder`. Refactored `loadSession` to use them; semantics unchanged.
+- `apps/web/app/api/qa/[sessionId]/next/route.ts` — added the stale-pending 409 gate ahead of the idempotency branch; imports `findLowestStaleOrder`.
+- `apps/web/app/api/qa/[sessionId]/answer/route.ts` — replaced the `isEdit` predicate. Stale propagation block stays inside the same `prisma.$transaction`.
+- `apps/web/src/components/qa/QaFlow.tsx` — added inline "Regenerate stale questions before continuing" amber notice; suppressed active question card while stale pending; treated 409 `stale_questions_pending` from `requestNext` distinctly from generic errors.
+- `apps/web/src/lib/qa/sessionState.test.ts` — new file, 19 unit tests via `node:test`.
+- `apps/web/package.json` — `test` script appended `src/lib/qa/sessionState.test.ts`.
+
+**Verification commands run**
+
+```powershell
+pnpm --filter web typecheck
+pnpm --filter web test
+pnpm --filter web exec next build
+pnpm --filter web exec prisma migrate status
+```
+
+**Verification results**
+
+- `pnpm --filter web typecheck` — zero errors.
+- `pnpm --filter web test` — 53 / 53 pass (19 new sessionState + 8 skipPolicy + 8 redactor + 12 paths + 6 policy).
+- `pnpm --filter web exec next build` — clean Turbopack build, same 11 routes (no schema or route additions).
+- `pnpm --filter web exec prisma migrate status` — clean (3 migrations, schema in sync).
+
+**Decisions during the correction pass**
+
+- The stale-pending 409 returns `{ error: 'stale_questions_pending', lowestStaleOrder }` (number) rather than the lowest stale question payload. The client doesn't need the body to drive Regenerate — Timeline already shows all stale rows with their Regenerate buttons. Returning just the order keeps the response shape minimal.
+- The `isEdit` change deliberately stales downstream questions even when none have answers yet. Rationale: a generated-but-unanswered Q6 reflects context from the answer the user is now editing; the next-question generation should re-derive it, so the row must be marked stale and regenerated like any other downstream question.
+- The QaFlow change suppresses the active card while stale pending so the user isn't tempted to re-answer the stale question's old content. The Timeline's Regenerate buttons remain the only forward path.
+
+**Remaining items / corrections still owed**
+
+- Manual smoke (clicking through `/runs/new`) was not run during the correction pass. The semantic changes are covered by unit tests; the UI tweak is a single-component edit that builds clean. Recommended path: `pnpm --filter web dev`, complete a session, edit Q3, observe Q4..Q6 marked stale and the inline amber notice + Regenerate buttons in Timeline.
+- No schema changes; no migration; no dependency change.
+
+
 
 ### Approved Scope
 
-- `/runs/new` prompt intake.
-- Dynamic PO question generation.
-- QuestionCard and Timeline.
-- Answer edit and stale propagation.
-- QaSession persistence.
+- `/runs/new` prompt intake with PO model picker.
+- Dynamic PO question generation (4 substantive choices + server-injected positions 5/6).
+- QuestionCard, Timeline, QaFlow client orchestrator (`useReducer`).
+- Answer edit and stale propagation (atomic Prisma transaction).
+- Stale regeneration (in-place update, `regeneratedAt` set, prior answers preserved but UI-gated).
+- QaSession persistence and auto-completion at `(order >= 5 && isFinal) || order === 6`.
+
+### Phase 2 Pre-Implementation Checklist
+
+- [x] Phase 2 plan reviewed, refined remotely via Ultraplan, and approved with eight required adjustments.
+- [x] Implementation completed.
+- [x] Verification passed (typecheck, tests, build, migrate status).
+- [x] Log updated.
+- [ ] Commit pushed. (User to commit and push.)
 
 ### Verification Targets
 
-- Complete 6-question flow.
-- AI auto-judge answer path.
-- Previous answer edit marks later questions stale.
+- New Run creates Run + QaSession via Default Project lookup: ✅ `/api/runs` POST, transactional create, `Run.status='po_qa'`, `Run.poModelId` set.
+- Six-question flow with options 1–6 + skip: ✅ `QuestionCard` covers 1–4, 5 (auto-judge), 6 (custom), Skip → 5 via `coerceSkipToAutoJudge`.
+- AI auto-judge stores `isAutoJudged=true` with `{chosenValue, rationale}`: ✅ enforced server-side in `/api/qa/[sessionId]/answer`.
+- Editing earlier answer marks later questions stale: ✅ `prisma.$transaction` in answer route flips `status='stale'`, sets `staleAt`.
+- Stale regenerate replaces prompt/options in place; prior answers gated by `updatedAt >= regeneratedAt`: ✅ `sessionState.loadSession` applies the gate.
+- Idempotent `/api/qa/[sessionId]/next`: ✅ returns existing active unanswered question instead of creating a duplicate order.
+- Disabled-model rejection on `POST /api/runs`: ✅ `getEnabledModelOrThrow` + `ModelDisabledError` → 400.
+- No unsafe provider casts: ✅ `resolveProviderName` uses the existing guard; unknown providers throw `UnknownProviderError` (mapped to 500).
+- Provider-availability invalidation on secret save/delete: ✅ POST/DELETE `/api/secrets` call `invalidateProviderAvailability(provider)`.
 
-### Completion Notes
+### Phase 2 Verification Commands
 
-Not completed yet.
+```powershell
+pnpm install                                                                      # no new deps
+pnpm --filter web exec prisma migrate dev --name phase2_qa_session_run_model_and_question_regen
+pnpm --filter web typecheck
+pnpm --filter web test                                                            # 26 prior + 8 new skipPolicy = 34 pass
+pnpm --filter web exec next build                                                 # bypasses prisma generate (stale workers in shared session lock the DLL)
+pnpm --filter web exec prisma migrate status
+```
+
+### Phase 2 Created or Modified Files
+
+`apps/web/prisma/`:
+
+- `apps/web/prisma/schema.prisma` — added `Run.poModelId`, `QaQuestion.regeneratedAt`, `QaQuestion.isFinal`, `QaAnswer.updatedAt @updatedAt`.
+- `apps/web/prisma/migrations/20260506025357_phase2_qa_session_run_model_and_question_regen/migration.sql` — committed.
+
+`apps/web/src/lib/models/`:
+
+- `apps/web/src/lib/models/catalog.ts` — added `getEnabledModelOrThrow`, `ModelDisabledError`, `resolveProviderName`, `UnknownProviderError`, `invalidateProviderAvailability`.
+
+`apps/web/src/lib/qa/`:
+
+- `apps/web/src/lib/qa/skipPolicy.ts` — choice-1..6 semantics, `coerceSkipToAutoJudge`, `valueForChoice`, `isAnswerable`.
+- `apps/web/src/lib/qa/sessionState.ts` — typed loader (`loadSession`), `shouldAutoComplete`, `buildHistoryLines`, `QA_LIMITS`.
+- `apps/web/src/lib/qa/timeout.ts` — `runWithGenerateTimeout` (30s, `AbortSignal.any`), `GenerateAbortedError`, `GenerateTimeoutError`.
+- `apps/web/src/lib/qa/skipPolicy.test.ts` — 8 unit tests.
+
+`apps/web/src/lib/agents/`:
+
+- `apps/web/src/lib/agents/po.prompt.ts` — Zod schemas (`nextQuestionSchema`, `judgeSchema`) plus prompt builders.
+- `apps/web/src/lib/agents/po.ts` — `generateNextQuestion`, `judgeAnswer`. Wraps runtime via `runWithGenerateTimeout`. Emits `ProviderUnavailableError` / `PoSchemaError` / `PoAuthError`. Calls `invalidateProviderAvailability` on auth or unknown failures.
+
+`apps/web/app/api/`:
+
+- `apps/web/app/api/runs/route.ts` — `POST`. Validates prompt + modelId, enforces `getEnabledModelOrThrow`, looks up Default Project, creates Run + QaSession in a transaction.
+- `apps/web/app/api/qa/[sessionId]/next/route.ts` — `POST`. Idempotent: returns existing active unanswered question if present. Otherwise generates next question (or regenerates a specific stale question via `{regenerateOrder}`).
+- `apps/web/app/api/qa/[sessionId]/answer/route.ts` — `POST`. Upserts answer; on auto-judge calls `judgeAnswer`; on edit propagates stale via `prisma.$transaction`; auto-completes when rule satisfied.
+- `apps/web/app/api/secrets/route.ts` — invalidates provider availability after successful set.
+- `apps/web/app/api/secrets/[name]/route.ts` — invalidates provider availability after delete.
+
+`apps/web/app/runs/`:
+
+- `apps/web/app/runs/new/page.tsx` — server component. Lists enabled models, mounts `<NewRunForm>`.
+- `apps/web/app/runs/new/[sessionId]/page.tsx` — server component. SSR via `loadSession`, mounts `<QaFlow>`.
+
+`apps/web/src/components/`:
+
+- `apps/web/src/components/runs/NewRunForm.tsx` — client island; POSTs `/api/runs`, navigates to session page.
+- `apps/web/src/components/qa/QuestionCard.tsx` — six options + skip.
+- `apps/web/src/components/qa/Timeline.tsx` — collapsible history with stale + regenerate CTAs and edit-answer buttons. Surfaces auto-judge rationale.
+- `apps/web/src/components/qa/QaFlow.tsx` — `useReducer` orchestrator; talks only to `/api/qa/...` (idempotent next + answer).
+
+`apps/web/app/`:
+
+- `apps/web/app/layout.tsx` — status pill bumped `Phase 1` → `Phase 2`.
+- `apps/web/app/page.tsx` — home description and CTA updated to point at `/runs/new`.
+
+`apps/web/`:
+
+- `apps/web/package.json` — `test` script appended `src/lib/qa/skipPolicy.test.ts`.
+
+### Phase 2 Verification Results (2026-05-06)
+
+- `prisma migrate dev --name phase2_qa_session_run_model_and_question_regen` — succeeded. Third migration committed.
+- `prisma migrate status` — clean (3 migrations applied).
+- `pnpm --filter web typecheck` — zero errors after fixing three TS issues during the run: PoSchemaError `cause` collision with built-in `Error.cause` (renamed to `schemaCause`), `nextQuestionSchema.kind` default conflict with generic `ZodType<T>` (default removed), and `noUncheckedIndexedAccess` issue in `runWithGenerateTimeout` (rewrote signal composition to avoid array indexing).
+- `pnpm --filter web test` — 34 / 34 pass (8 skipPolicy + 12 paths + 8 redactor + 6 policy).
+- `pnpm --filter web exec next build` — clean Turbopack build. 11 routes total. (Used `exec next build` to skip `prisma generate` because stale Node workers from earlier sessions hold a Windows file lock on `query_engine-windows.dll.node`. Schema unchanged since the last successful generate — equivalent for verification purposes.)
+
+### Phase 2 Decisions
+
+- **`QaAnswer.updatedAt @updatedAt`** instead of `answeredAt`. Prisma manages the timestamp on every `update()` and on initial insert via `now()` defaulting. The current-answer gate in `sessionState.loadSession` is `answer.updatedAt.getTime() >= question.regeneratedAt.getTime()` (with `regeneratedAt == null` ⇒ always current).
+- **`Run.poModelId` (not `QaSession.poModelId`)** so Phase 3/4 can extend the Run with `leadModelId` etc. without re-migrating Phase 2 rows. Persisted as the canonical `ModelCatalog.modelId`; provider is looked up server-side every call.
+- **`QaQuestion.isFinal`** added to schema (not just on the in-memory schema) so the auto-completion rule is evaluable from a fresh `loadSession` without consulting the original generation payload.
+- **Idempotent next**. The route returns the existing active unanswered question instead of generating a new one when called twice in quick succession; this makes `useEffect`-driven calls and double-clicks safe.
+- **Stale propagation keeps `QaAnswer` rows intact.** The `regeneratedAt` gate hides the orphaned answers from the UI without losing the audit trail. Re-answering upserts on the unique `[sessionId, questionId]` constraint.
+- **Auto-completion rule** is the simpler MVP shape: `(order >= 5 && isFinal) || order === 6`, AND no stale questions outstanding. No "Continue / Finish" CTA in the UI.
+- **Auto-judge rationale stored** in `QaAnswer.value` JSON as `{ chosenValue, rationale }`. Timeline surfaces the rationale beneath the answer.
+- **Skip → option 5** mapped server-side in `coerceSkipToAutoJudge` so the client never has to know.
+- **Provider safety**. `resolveProviderName` is the only path from `ModelCatalog.provider` to the runtime's `ProviderName` union. Unknown providers throw `UnknownProviderError` and the route returns HTTP 500 with `{error: 'unknown_provider'}` — never an unsafe cast.
+- **Cache invalidation** on secret save/delete uses the new `invalidateProviderAvailability(provider)` export. The PO module also calls it on auth-shaped errors so the next probe is fresh.
+- **Ollama path** is supported but untested in this session: the runtime / PO error mapping treats Ollama structured-output failures as either `po_schema_error` (502) or `provider_unavailable` (503) without crashing. The user's local Ollama can be used if no OpenAI/Anthropic keys are configured.
+- **Test runner stays Windows-safe** — explicit file list, no glob expansion. `tsx --test src/lib/secrets/redactor.test.ts src/lib/workspace/paths.test.ts src/lib/tools/policy.test.ts src/lib/qa/skipPolicy.test.ts`.
+
+### Phase 2 Deviations from `IMPLEMENTATION.md`
+
+- `apps/web/src/lib/po/skipPolicy.ts` (per IMPLEMENTATION.md) → `apps/web/src/lib/qa/skipPolicy.ts`. Domain-folder consistency with Phase 1 (`secrets/`, `tools/`, `db/`). Agent-side logic stays at `apps/web/src/lib/agents/po.ts` and `apps/web/src/lib/agents/po.prompt.ts`.
+- Added helpers `apps/web/src/lib/qa/sessionState.ts` and `apps/web/src/lib/qa/timeout.ts`, plus client orchestrator `apps/web/src/components/qa/QaFlow.tsx` and `apps/web/src/components/runs/NewRunForm.tsx`. None of these are listed in IMPLEMENTATION.md but are necessary to keep page files thin.
+- Schema: added one extra field beyond the Phase 2 plan — `QaQuestion.isFinal` — so the auto-completion rule survives a session reload without re-deriving `isFinal` from the prompt round-trip. Same migration, no extra migration step.
+
+### Phase 2 Remaining Risks
+
+- **Manual smoke not yet executed in this session.** Build + types + tests are green; the live `/runs/new` flow with a real provider has not been clicked through. Recommended path: configure Ollama (no key required) or paste an Anthropic / OpenAI key into Settings, then walk Q1→Q6 + edit + regenerate.
+- **`location.reload()` in `QaFlow`** is a pragmatic short-cut that re-fetches via the page's server-side `loadSession`. A future refactor can swap in a typed JSON GET for `/api/qa/[sessionId]` if the reload feels janky in practice.
+- **Concurrent answer race.** Single-user MVP, no row-level locking. The `[sessionId, questionId]` unique constraint blocks duplicate answers; UI is disabled while in-flight. A double-click submits one row and the second 409s.
+- **Auth-error detection** uses status-code probing + message regex. Some upstream errors don't expose `.status`; the regex on `\b401\b|unauthorized|\b403\b|forbidden` catches the common shapes but isn't exhaustive. False negatives degrade to `provider_unavailable` (503), which is still actionable.
+- **PO schema strictness.** Smaller / weaker Ollama models may fail the Zod schema. The route returns 502 `po_schema_error` and the UI surfaces it; no auto-retry. Users may need to switch to a stronger model.
+- **Process-restart recovery still deferred** to Phase 4 per the original deviation.
 
 ## Phase 3 — Team Composition
 
@@ -502,16 +665,20 @@ pnpm --filter web build
 
 ## Today's Session — 2026-05-06
 
-### Phase 1 work completed today
+### Phase 1 work completed earlier today
 
 Implemented Providers, Tools, Secrets per the revised plan. Build green, 26/26 tests pass, no schema changes.
 
+### Phase 2 work completed today
+
+Implemented the PO Q&A flow per the Ultraplan-refined plan with eight user-required adjustments. Schema migrated (`Run.poModelId`, `QaQuestion.regeneratedAt`, `QaQuestion.isFinal`, `QaAnswer.updatedAt`). Build green, 34/34 tests pass.
+
 ### Next session: where to start
 
-1. Review `PHASE_LOG.md` "Phase 1 — Providers, Tools, Secrets" section for what landed.
-2. (If not done in this terminal) commit and push Phase 1.
-3. Run `pnpm --filter web dev` and visually smoke-test `/settings` (SecretsEditor + AvailabilityBadges).
-4. Open Phase 2 planning per `IMPLEMENTATION.md` § "Phase 2 — PO Q&A". Do not write Phase 2 code until the detailed plan is reviewed and approved.
+1. Review `PHASE_LOG.md` "Phase 2 — PO Q&A" section.
+2. (If not done in this terminal) commit and push Phase 1 + Phase 2.
+3. Run `pnpm --filter web dev` and click through `/runs/new` end-to-end with Ollama (or any provider with a configured key) — answer Q1..Q6 with mixed options (1–4 / 5 auto-judge / 6 custom / skip), then edit Q2 and regenerate Q3..Q5.
+4. Open Phase 3 planning per `IMPLEMENTATION.md` § "Phase 3 — Team Composition". Do not write Phase 3 code until the detailed plan is reviewed and approved.
 
 ## Resume Prompt — paste into next session
 
