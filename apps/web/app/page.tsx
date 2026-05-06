@@ -6,9 +6,10 @@ export default function HomePage() {
       <div className="space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight">Harness Agents</h1>
         <p className="max-w-2xl opacity-70">
-          Local-first multi-agent workspace. Phase 0 ships scaffolding only — no agents run
-          yet. The database schema, default project, and model catalog are wired up so the
-          PO Q&A flow, team builder, and Lead DAG planner can land in later phases.
+          Local-first multi-agent workspace. Phase 1 wires up the agent runtime
+          foundation: provider keys (with masked storage), the seeded model catalog,
+          per-provider availability checks, and the settings editor. The PO Q&A flow,
+          team builder, and Lead DAG planner land in later phases.
         </p>
       </div>
 
@@ -16,7 +17,8 @@ export default function HomePage() {
         <li className="rounded-lg border border-current/15 p-5">
           <h2 className="text-base font-medium">Settings</h2>
           <p className="mt-1 text-sm opacity-70">
-            Inspect the seeded model catalog and verify the database is reachable.
+            Add provider keys, see the active storage backend, and check
+            per-provider availability against the seeded model catalog.
           </p>
           <Link
             href="/settings"

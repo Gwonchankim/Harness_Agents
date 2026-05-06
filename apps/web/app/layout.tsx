@@ -21,7 +21,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
               Settings
             </Link>
             <span className="ml-auto rounded-full border border-current/20 px-2 py-0.5 text-xs opacity-60">
-              Phase 0
+              Phase 1
             </span>
           </nav>
         </header>
