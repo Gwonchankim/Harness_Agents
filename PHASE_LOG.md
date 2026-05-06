@@ -18,6 +18,14 @@ Update this file at the end of each Phase.
 - Phase 2 correction pass applied and re-verified on 2026-05-06 (stale-pending gate, isEdit fix, sessionState test file, inline UI hint).
 - Phase 3 (Team Composition) implemented and verified locally on 2026-05-06.
 - Phase 3 tiny correction (export size guard) applied and re-verified on 2026-05-06.
+- Phase 3 pre-commit corrections (nav active state, two-dropdown PO model selector, QaFlow auto-advance fix) applied and re-verified on 2026-05-06.
+- Phase 3 local Ollama QA timeout correction applied and re-verified on 2026-05-06 (provider-specific PO timeout, enriched 504 body, QaFlow error gate + Retry UI, Ollama hint).
+- Phase 3 QA busy-state + interaction-lock UI correction applied and re-verified on 2026-05-06 (option-6 visual lockdown, pick() guard, Skip visual disable, Timeline flicker fix via interactionLocked).
+- Phase 3 QA pending-operation status correction applied and re-verified on 2026-05-06 (replaced boolean busy with explicit pendingOperation enum so the answer→next handoff label never flickers).
+- **Open issues before Phase 4** (recorded 2026-05-06 — see "Phase 3 — Remaining Issues" section below):
+  - Compose team's per-Agent model selector still uses a single flat dropdown; needs the Provider + Model two-stage pattern that `<NewRunForm>` already uses.
+  - On confirm, `<TeamComposer>` navigates to `/runs/[runId]` which 404s — that route doesn't exist until Phase 4. Should show an in-place success state instead.
+  - Local Ollama compose hit `po_schema_error` once during smoke; Retry succeeded on the next click. Auto-retry / friendlier guidance deferred.
 - Awaiting commit/push by user (user owns git ops).
 
 ## Phase Workflow
@@ -601,6 +609,193 @@ A review surfaced one missing guard: `exportService.ts` had no upper bound on th
 
 No schema change. No new dependencies.
 
+### Phase 3 Pre-Commit Corrections (2026-05-06) — nav, PO selector, QA auto-advance
+
+Three issues surfaced during local smoke testing. All addressed without schema or dependency changes.
+
+**Issues fixed**
+
+1. **Top nav active state was wrong.** "Harness Agents" stayed visually highlighted even on `/settings`. Extracted nav into a client component so it can use `usePathname()`. New file `apps/web/src/components/navigation/AppNav.tsx`. Active rules per spec: `/` only when pathname === `/`; `/settings` when prefix matches; `/runs` when prefix matches. Active style is `font-semibold opacity-100`; inactive is `opacity-70 hover:opacity-100`. Added a "New run" link. Phase pill stays `Phase 3`. `apps/web/app/layout.tsx` is unchanged as a server component except it imports and renders `<AppNav />` in place of the inline JSX.
+2. **PO model selector was a single flat dropdown.** Replaced with two cascading dropdowns in `apps/web/src/components/runs/NewRunForm.tsx`: (a) Provider — UI labels OpenAI / Anthropic / Local mapped to `openai` / `anthropic` / `ollama`; (b) Model — filtered by selected provider. Provider switch auto-selects the default within that provider, otherwise the first enabled model. If a provider has zero enabled models, the model dropdown disables itself and shows "No enabled models" — Submit stays disabled. Submit body unchanged: `{ prompt, modelId }`. API contract unchanged.
+3. **QA did not advance after the first answer.** Root cause was the dependency list of `QaFlow`'s auto-advance `useEffect`: it tracked only `sessionId`, `questions.length`, `staleQuestions.length`, and `editingQuestionId`. After Q1 was answered, the question count stayed the same and `currentQuestion` was the value that actually flipped to `null` — so the effect never re-fired. Fix: `requestNext` is now wrapped in `useCallback` keyed only on `sessionId`. The effect's deps now include every value it reads (`busy`, `isComplete`, `currentQuestionId`, `staleQuestions.length`, `maxAnsweredOrder`, `editingQuestionId`, `requestNext`). The stale `// eslint-disable-next-line react-hooks/exhaustive-deps` is gone. Idempotency on the server (`/api/qa/[sessionId]/next` returns the existing active unanswered question instead of generating a duplicate) prevents any double-create from a transient busy-flip cycle. Stale-question behaviour is unchanged — when stale rows are pending the server still returns `409 stale_questions_pending` and `<QaFlow>` still renders the amber inline notice and Timeline regenerate buttons.
+
+**Test note (requirement 6).** A focused component test would require introducing jsdom + a renderer just to drive `useEffect` timing — overhead disproportionate to a structural one-liner fix. We skip the component test and rely on the existing route idempotency contract (already exercised through `sessionState.test.ts` for the gate logic and through the manual smoke path). The auto-advance trigger condition itself is covered by the existing `deriveCurrentQuestion` test (returns `null` when all active questions have answers — exactly the signal the effect now keys off).
+
+**Files touched**
+
+- `apps/web/src/components/navigation/AppNav.tsx` — new client component (`usePathname` + active styling).
+- `apps/web/app/layout.tsx` — server component now just renders `<AppNav />` inside the existing `<header>`.
+- `apps/web/src/components/runs/NewRunForm.tsx` — two-dropdown provider/model selector with cascading defaults.
+- `apps/web/src/components/qa/QaFlow.tsx` — `requestNext` is `useCallback`; effect deps audited; eslint-disable removed.
+
+**Verification commands run**
+
+```powershell
+pnpm --filter web typecheck
+pnpm --filter web test
+pnpm --filter web exec next build
+pnpm --filter web exec prisma migrate status
+```
+
+**Verification results**
+
+- `pnpm --filter web typecheck` — zero errors.
+- `pnpm --filter web test` — 71 / 71 pass (unchanged from the export-guard correction; component tests intentionally skipped per requirement 6).
+- `pnpm --filter web exec next build` — clean Turbopack build, same 14 routes.
+- `pnpm --filter web exec prisma migrate status` — clean (3 migrations, schema in sync).
+
+No schema change. No new dependencies. No API contract change.
+
+### Phase 3 Local Ollama QA Timeout Correction (2026-05-06)
+
+**Symptom (manual smoke).** Running PO Q&A through local Ollama (`gemma4:e4b` @ `http://localhost:11434/v1`): Q1/Q2 (option pick) and Q3 (custom answer) saved correctly. After Q3, the auto-call to `POST /api/qa/[sessionId]/next` showed a `timeout` message. Q4 eventually appeared but the timeout banner stayed; after answering Q4 the same timeout message reappeared. The flow felt stuck.
+
+**Root cause (two cooperating problems).**
+
+1. **PO generate timeout was a fixed 30 s.** That is fine for OpenAI/Anthropic but local Ollama models routinely take longer to first-token. `gemma4:e4b` exceeded 30 s on a fresh run, the route returned `504 timeout`, and the user saw the failure even though the LLM continued running on Ollama and would have finished in ~60–90 s.
+2. **`<QaFlow>` auto-advance ignored the error state.** Once Q1 was answered, the effect re-fired (correct from the prior pre-commit fix); but if `requestNext()` produced a 504 the resulting `state.error` did NOT short-circuit the next firing. The previously-completed answer also left the timeout banner stuck on screen because no handler cleared `state.error` on a successful retry/answer.
+
+**Fix.**
+
+1. **Provider-specific timeouts (`apps/web/src/lib/qa/timeout.ts`).** New helper `resolvePoGenerateTimeoutMs(provider)`:
+   - `ollama` ⇒ default `OLLAMA_PO_GENERATE_TIMEOUT_MS = 120_000`.
+   - `openai` / `anthropic` ⇒ default `PO_GENERATE_TIMEOUT_MS = 30_000`.
+   - Env overrides: `HARNESS_OLLAMA_PO_GENERATE_TIMEOUT_MS` (Ollama only) and `HARNESS_PO_GENERATE_TIMEOUT_MS` (general; Ollama-specific wins for Ollama).
+   `callGenerate` in both `apps/web/src/lib/agents/po.ts` and `apps/web/src/lib/agents/team.ts` now call `runWithGenerateTimeout(signal, fn, resolvePoGenerateTimeoutMs(provider))`.
+2. **Enriched timeout error.** `GenerateTimeoutError` constructor now takes optional `{ provider, modelId }` metadata. `callGenerate` rethrows with these fields populated. The three routes that map `GenerateTimeoutError` to HTTP 504 (`/api/qa/[sessionId]/next`, `/api/qa/[sessionId]/answer`, `/api/teams/recommend`) now surface `{ error: 'timeout', timeoutMs, provider, modelId }` so the user sees which model stalled.
+3. **`<QaFlow>` no-loop-on-error.**
+   - Auto-advance `useEffect` adds `if (state.error) return;` (and includes `state.error` in the dep list). Timeouts and provider errors stay sticky until the user retries.
+   - `requestNext`, `regenerate`, and `submit` each clear `state.error` at the start of the request. A successful retry / next answer wipes the stale banner.
+4. **Retry UI.** When `currentQuestion == null && error != null && !stalePending && !isComplete && !editing`, the active-question slot now renders the error message plus a `Retry next question` button that calls `requestNext()`. Server-side idempotency (`/next` returns the existing active question instead of generating a duplicate) keeps duplicate prevention intact across retries.
+5. **Ollama UX hint.** The page (`apps/web/app/runs/new/[sessionId]/page.tsx`) resolves the Run's PO model provider via `prisma.run.findUnique` + `prisma.modelCatalog.findUnique` + `resolveProviderName`, and threads `poProvider` to `<QaFlow>`. The "Loading next question…" branch now appends `Local models may take up to 120 seconds.` when `poProvider === 'ollama'`.
+6. **Friendly error formatting.** New `formatErrorMessage(data, status)` helper in `<QaFlow>` turns `{error: 'timeout', timeoutMs, provider, modelId}` into `Timeout after 120s waiting for ollama/gemma4:e4b. Retry, or pick a faster model in Settings.` — and similarly for `provider_unavailable`, `provider_auth_failed`, `po_schema_error`. The user always sees something actionable, never a bare `timeout` token.
+
+**Files touched**
+
+- `apps/web/src/lib/qa/timeout.ts` — `resolvePoGenerateTimeoutMs`, `OLLAMA_PO_GENERATE_TIMEOUT_MS`, enriched `GenerateTimeoutError`.
+- `apps/web/src/lib/agents/po.ts` — `callGenerate` resolves the provider's timeout and rethrows `GenerateTimeoutError` with provider+modelId.
+- `apps/web/src/lib/agents/team.ts` — same callGenerate change.
+- `apps/web/app/api/qa/[sessionId]/next/route.ts` — 504 body adds `provider` and `modelId`.
+- `apps/web/app/api/qa/[sessionId]/answer/route.ts` — same.
+- `apps/web/app/api/teams/recommend/route.ts` — same.
+- `apps/web/app/runs/new/[sessionId]/page.tsx` — resolves and threads `poProvider`.
+- `apps/web/src/components/qa/QaFlow.tsx` — `Props.poProvider`, error gate, retry UI, Ollama hint, friendly error formatter.
+
+**Verification**
+
+- `pnpm --filter web typecheck` — zero errors.
+- `pnpm --filter web test` — 71 / 71 pass (no test changes; the fix is structural — adding component-level tests would require jsdom + a renderer per the pre-commit decision).
+- `pnpm --filter web exec next build` — clean Turbopack build, same 14 routes.
+- `pnpm --filter web exec prisma migrate status` — clean (3 migrations, schema in sync).
+
+No schema change. No new dependencies. No API contract removal — only additive fields on the 504 response body.
+
+### Phase 3 QA Busy-State UI Correction (2026-05-06)
+
+**Symptom.** During Q&A, picking option 5 (`AI auto-judge`) immediately showed `Working…` and disabled buttons 1–5 visually, but the option-6 `Custom answer` container (textarea + Submit-custom button) did not pick up the disabled treatment. Users could plausibly assume they were still able to type or click into option 6 while the auto-judge was in flight.
+
+**Fix (`apps/web/src/components/qa/QuestionCard.tsx`).**
+
+- The option-6 wrapper now applies `aria-disabled={busy}` plus `cursor-not-allowed opacity-40` while busy, mirroring the dimming of the choice buttons.
+- Textarea retains `disabled={busy}` and adds `disabled:cursor-not-allowed disabled:opacity-60` so it visibly turns off (focus + cursor + dimmed text).
+- "Submit custom answer" button gains `aria-disabled` + `disabled:cursor-not-allowed disabled:opacity-40` so the disabled treatment matches the other choice buttons.
+- "Skip (use AI auto-judge)" gains `aria-disabled` + `disabled:cursor-not-allowed disabled:opacity-40 disabled:no-underline`. The underline drops while disabled so it doesn't read as a live link.
+- `pick()` now early-returns when `busy === true`. Belt-and-braces against any double-fire that slipped past the disabled prop (e.g. an in-flight click event from before busy flipped).
+
+No new prop, no new dependency.
+
+### Phase 3 QA Interaction Lock UI Correction (2026-05-06)
+
+**Symptom.** While waiting for the next question to be generated, Timeline's `Edit answer` (and `Regenerate`) buttons briefly enabled then re-disabled — a visible flicker — every time the user submitted an answer. Same root cause manifested as the status pill briefly flipping back to `Active` between `Working…` and the next request.
+
+**Root cause.** `submit()`'s `finally` cleared `state.busy` after `SET_VIEW`, then the auto-advance `useEffect` immediately fired `requestNext()` which set `state.busy=true` again. Timeline received `busy={state.busy}`, so it briefly thought the page was idle in that gap and re-enabled its buttons.
+
+**Fix (`apps/web/src/components/qa/QaFlow.tsx`).**
+
+- Derive a richer interactive-disable signal:
+  ```ts
+  const isWaitingForNextQuestion =
+    !state.view.isComplete &&
+    !state.error &&
+    currentQuestionId == null &&
+    !stalePending &&
+    state.editingQuestionId == null;
+  const interactionLocked = state.busy || isWaitingForNextQuestion;
+  ```
+  The `!state.error` clause keeps the Retry banner interactive after a timeout — the user can always click Retry, and Timeline buttons can be touched if the user wants to edit an answered question to fork a new direction.
+- Pass `busy={interactionLocked}` to both `<QuestionCard>` and `<Timeline>`. They never see the false→true→false micro-blip; the "wait for next question" segment stays locked.
+- Status text:
+  - `state.busy` ⇒ `Working…`
+  - else `isWaitingForNextQuestion` ⇒ `Generating next question…`
+  - else ⇒ `Active` / `Session completed`
+- Retry button stays `disabled={state.busy}` so the user can always click it from the error banner.
+- Timeout retry UX preserved: auto-advance `useEffect` still gates on `state.error` (no auto-retry); error breaks `isWaitingForNextQuestion`, which is the desired behaviour because the wait isn't really happening — the user has to act.
+
+**Files touched (combined corrections)**
+
+- `apps/web/src/components/qa/QuestionCard.tsx` — option-6 visual lockdown, Skip disable visuals, `pick()` early-return.
+- `apps/web/src/components/qa/QaFlow.tsx` — `isWaitingForNextQuestion` + `interactionLocked` derivation, status-text widening, props swap to children.
+
+**Verification**
+
+- `pnpm --filter web typecheck` — zero errors.
+- `pnpm --filter web test` — 71 / 71 pass (no test changes; component-level testing remains out of scope per the prior pre-commit decision).
+- `pnpm --filter web exec next build` — clean Turbopack build, same 14 routes.
+
+No schema change. No new dependencies. No API contract change.
+
+### Phase 3 QA Pending-Operation Status Correction (2026-05-06)
+
+**Symptom.** The status pill flickered between `Working…` and `Generating next question…` (and occasionally `Active`) during the answer-submit → next-question handoff. The flicker only showed up when the next-question generation actually had to run — i.e. immediately after the user answered Q1..Q5 and before the next card appeared. The boolean `busy` flag couldn't distinguish "answer in flight" from "next-question in flight" so the label flipped twice during a single uninterrupted user wait.
+
+**Root cause.** The previous correction had derived `isWaitingForNextQuestion` to keep `interactionLocked` stable, but the *label* still keyed off `state.busy`. The sequence on a successful answer:
+
+1. `submit()` sets `busy=true` → label `Working…`.
+2. fetch resolves → `SET_VIEW` → `state.busy=true` still, `currentQuestion=null` already → label `Working…`.
+3. `submit()`'s `finally` sets `busy=false` → label briefly resolves to `isWaitingForNextQuestion ? 'Generating next question…' : 'Active'`. Render commits.
+4. auto-advance `useEffect` fires → `requestNext()` sets `busy=true` → label `Working…` again.
+
+The user saw the label flip three times even though they had only initiated one wait.
+
+**Fix (`apps/web/src/components/qa/QaFlow.tsx`).**
+
+- Replace `busy: boolean` in state with `pendingOperation: 'answer' | 'next' | 'regenerate' | null`.
+- New action `SET_PENDING_OPERATION { operation }` replaces `SET_BUSY`.
+- `SET_ERROR` continues to also clear `pendingOperation` (an error always ends the in-flight operation, in one atomic update).
+- `submit()` starts with `pendingOperation='answer'`, `requestNext()` with `'next'`, `regenerate()` with `'regenerate'`. Each `finally` resets to `null`.
+- New `statusLabel(state, isWaitingForNextQuestion)` helper:
+  - `pendingOperation === 'answer'` ⇒ `Working…`
+  - `pendingOperation === 'next'` ⇒ `Generating next question…`
+  - `pendingOperation === 'regenerate'` ⇒ `Regenerating question…`
+  - falls through to `isWaitingForNextQuestion ? 'Generating next question…' : 'Active'`
+- `interactionLocked = state.pendingOperation != null || isWaitingForNextQuestion`. Children still see a boolean `busy` prop sourced from this; no Timeline / QuestionCard changes were needed.
+- `isWaitingForNextQuestion` now also requires `state.pendingOperation == null` (in addition to the existing `!state.error`). This makes the predicate strictly "we are between operations and can drift to the next one", and the helper resolves cleanly.
+- Auto-advance `useEffect` gates on `state.pendingOperation != null` (not `state.busy`).
+- Retry button uses `disabled={state.pendingOperation != null}`; its label becomes `Retrying…` only when `pendingOperation === 'next'`.
+
+**New label sequence on a successful answer**
+
+1. submit starts → `pendingOperation='answer'` → label `Working…`.
+2. fetch resolves, `SET_VIEW` updates view (currentQuestion now null), `END_EDIT`, then `finally` sets `pendingOperation=null`. React batches these into one render. State: `pendingOperation=null`, `currentQuestion=null`, `isWaitingForNextQuestion=true`. Label resolves to `Generating next question…`.
+3. auto-advance `useEffect` runs, calls `requestNext()`, which sets `pendingOperation='next'`. Label resolves to `Generating next question…`.
+4. `requestNext` resolves OK → `location.reload()` → fresh page render with the new question.
+
+The label never returns to `Active` and never flips back to `Working…`. Same applies to `regenerate()` (label sustains `Regenerating question…`) and to error → Retry transitions (Retry never causes a `Working…` interlude).
+
+**Files touched**
+
+- `apps/web/src/components/qa/QaFlow.tsx` — state shape, action set, all three operation handlers, status label, interaction-lock derivation, Retry button condition.
+
+No other component touched. `<QuestionCard>` and `<Timeline>` continue to receive `busy: boolean`.
+
+**Verification**
+
+- `pnpm --filter web typecheck` — zero errors.
+- `pnpm --filter web test` — 71 / 71 pass (no test changes; component-level testing remains out of scope per the prior pre-commit decision).
+- `pnpm --filter web exec next build` — clean Turbopack build, same 14 routes.
+
+No schema change. No new dependencies. No API contract change.
+
 ## Phase 4 — DAG Executor and Run Progress
 
 Status: Not started
@@ -864,5 +1059,115 @@ Implemented Team Composition per the Ultraplan-refined plan with ten user-requir
 - `PLAN.md`, `IMPLEMENTATION.md`, `PHASE_LOG.md` 읽기
 - Phase 2 plan 작성
 - 승인 대기
+```
+
+## Phase 3 — Remaining Issues (open before Phase 4)
+
+Three issues surfaced during local smoke testing on 2026-05-06 that we deferred. None block Phase 3 commit (the team is created, files exported, DB consistent), but they need to be cleaned up before Phase 4 starts.
+
+### 1. Compose team — per-Agent model selector should be two-dropdown
+
+`<TeamComposer>` (`apps/web/src/components/team/TeamComposer.tsx`) currently renders a single flat `<select>` per agent listing every enabled model. `<NewRunForm>` already uses the Provider (OpenAI / Anthropic / Local) + Model cascading pattern, and the same UX should apply here. The data is already on the client — `data.modelCatalog` already includes `provider`, `displayName`, `costTier`, `speedTier`, `isDefault`. Reuse the same `PROVIDER_TABS` mapping (`openai` / `anthropic` / `ollama` ⇒ `OpenAI` / `Anthropic` / `Local`) and the `pickProviderModelId` helper logic.
+
+Per-agent state needs a `provider` alongside `modelId`. Simplest: derive `provider` from the current `modelId` via lookup against `modelCatalog` on every render (no extra state field needed); when the user changes the provider, set `modelId = pickProviderModelId(newProvider, modelCatalog)`. When the user changes the model, the provider follows automatically from the lookup. Keep the same submit shape (the route only validates `modelId`).
+
+### 2. `<TeamComposer>` confirm → `/runs/[runId]` returns 404
+
+Both confirm paths in `<TeamComposer>` call `router.push(`/runs/${runId}` as never)`. That route does not exist in Phase 3 — it is the future Phase 4 Run-detail page. The user sees a Next 404. The `Team` row, `Agent[]`, `TeamRevision v1`, and `Run.status='ready'` are all correctly committed and the export files do land on disk; the failure is purely the navigation target.
+
+Fix shape: stop pushing to `/runs/[runId]` for now. Replace with an in-component success state showing:
+
+- "Team created" message with the team name + agent count.
+- The `AGENTS.md` preview the user already saw (`<RevisionDiffViewer>` reuse) so they can confirm the snapshot.
+- Any `exportErrors[]` if the export failed for some files.
+- A note that DAG execution (Phase 4) will pick up the run.
+- Optionally a link back to `/runs/new` for starting another session.
+
+The `run_already_has_team` 409 path (which fires if the user double-clicks confirm or refreshes after a successful create) should land in the same success state instead of showing a raw error string. The 409 body returns `{ teamId, runId }` — same shape as the success body — so the handler can treat them identically.
+
+### 3. Local Ollama compose hit `po_schema_error` once
+
+During manual smoke with `gemma4:e4b`, the compose-team LLM call returned a malformed structured response on the first attempt; clicking Retry once succeeded. The Phase 2 PO module already catches `AI_NoObjectGeneratedError` and maps to `PoSchemaError` → 502 with `error: 'po_schema_error'`, and `formatErrorMessage` in `<QaFlow>` produces the user-facing message. `<TeamComposer>` shows the raw error string — it should at minimum reuse the same friendly formatter and ideally retry once automatically (with a small backoff) before surfacing the error.
+
+Defer until after the two items above. Cost of the failure is low (one user click) and the symptom is rare on cloud providers.
+
+## Resume Prompt — paste into next session (2026-05-06 → Phase 3 Compose corrections)
+
+```text
+오늘은 어제 멈춘 지점에서 이어서 작업합니다. Phase 3 Compose team correction 단계입니다.
+
+먼저 다음을 확인해주세요:
+1. `PLAN.md`, `IMPLEMENTATION.md`, `PHASE_LOG.md`를 읽습니다.
+2. `PHASE_LOG.md`의 다음 섹션을 모두 검토합니다:
+   - "Current Status" (Phase 3 + 모든 correction 진행 상황)
+   - "Phase 3 — Team Composition" (메인 구현)
+   - "Phase 3 Tiny Correction" (export size guard)
+   - "Phase 3 Pre-Commit Corrections" (nav, PO selector 2단, QaFlow auto-advance)
+   - "Phase 3 Local Ollama QA Timeout Correction" (provider별 timeout, retry UI)
+   - "Phase 3 QA Busy-State UI Correction" (옵션 6 lockdown, pick guard)
+   - "Phase 3 QA Interaction Lock UI Correction" (Timeline flicker fix)
+   - "Phase 3 QA Pending-Operation Status Correction" (boolean → enum)
+   - "Phase 3 — Remaining Issues" (이번 세션에서 처리할 3가지 항목)
+
+현재 상태 (2026-05-06 기준):
+- Phase 0/1/2/3 모두 완료, 53개+ 테스트 PASS, build clean, schema in sync (3 migrations).
+- 사용자가 모든 Phase commit/push를 직접 수행 중. git status를 먼저 확인하세요.
+- Phase 3 본 구현 + 다수 correction이 워킹 트리에 누적되어 있을 수 있습니다 (사용자 commit 여부에 따라).
+- Phase 4 (DAG/SSE)는 아직 시작하지 않습니다. Phase 3 보정만 하고 멈춥니다.
+
+오늘의 작업 (Phase 3 Compose corrections, 3개 항목):
+
+작업 1 — TeamComposer Agent model selector 2단 dropdown:
+- `apps/web/src/components/team/TeamComposer.tsx`의 per-agent 모델 dropdown을
+  `apps/web/src/components/runs/NewRunForm.tsx`와 동일한 Provider + Model 2단 형태로 변경.
+- UI 라벨 매핑: `OpenAI` → `openai`, `Anthropic` → `anthropic`, `Local` → `ollama`.
+- Provider 변경 시 해당 provider의 default model이 있으면 그걸, 없으면 첫 enabled 모델로 자동 선택.
+- 빈 provider면 disabled `No enabled models`.
+- 제출 페이로드 (`{ name, role, isLead, modelId, systemPrompt, toolsAllowed, tags }`) shape는 그대로 유지.
+- API 계약 변경 없음.
+
+작업 2 — Confirm 후 success state in-place:
+- `<TeamComposer>`의 `confirmRecalled`와 `confirmNew` 양쪽에서
+  `router.push('/runs/${runId}')` 제거.
+- 대신 component-internal `success` 상태로 전환:
+  - 새 useState나 reducer로 `successState: { teamId, runId, exportErrors? } | null`.
+  - 성공 시 success state 렌더 (Team 이름 + agent 수 + AGENTS.md preview + exportErrors[] + Phase 4 안내).
+  - `<RevisionDiffViewer>`는 이미 있으니 재사용.
+  - 새 run을 시작하기 위한 `/runs/new` 링크 추가는 선택사항.
+- `run_already_has_team` 409도 동일한 success state로 라우팅:
+  - 409 응답 body는 `{ error, teamId, runId }` 형태이므로 success body와 호환.
+  - 사용자가 새로고침/더블클릭한 경우에도 raw error 대신 success state가 보여야 함.
+- Phase 4 시작 시 다시 `/runs/[runId]`로 push하도록 되돌리는 코드 위치 주석을 남기거나 TODO 표시.
+
+작업 3 (선택 / deferred 가능):
+- Local Ollama compose에서 `po_schema_error`가 1회 발생한 케이스.
+- 이번 세션에서는 user-friendly 메시지만 적용해도 충분 (`formatErrorMessage` 패턴 재사용).
+- 자동 retry-once는 다음 세션 또는 Phase 4 이후로 미뤄도 됨.
+- 작업 1, 2 끝낸 시간 여유에 따라 결정.
+
+검증:
+- pnpm --filter web typecheck
+- pnpm --filter web test
+- pnpm --filter web exec next build
+- pnpm --filter web exec prisma migrate status
+
+수동 확인 (브라우저):
+- /runs/new → Q1..Q5/Q6 완료 → /compose 자동 전환
+- 각 Agent 카드에서 Provider dropdown / Model dropdown이 cascading하게 작동
+- Provider 바꾸면 model이 자동 reselect
+- Confirm 누르면 success state가 같은 페이지에 표시됨 (404 없음)
+- 새로고침해도 success state 유지 (run_already_has_team 409 → success)
+- projects/default/teams/{teamId}/AGENTS.md, team.json 모두 디스크에 존재
+- Artifact rows 확인
+
+완료 후:
+- PHASE_LOG.md "Phase 3 Compose Corrections (날짜)" 섹션 추가
+- "Open issues before Phase 4" 항목에서 처리한 것은 제거하고 남은 것만 유지
+- 멈추고 사용자 commit/push 대기. Phase 4 시작 금지.
+
+참고:
+- 모든 fs / 시크릿 / 도구 / runtime 규칙은 Phase 1/2/3에서 정해진 그대로.
+- pendingOperation enum 패턴은 QaFlow에만 적용되어 있음. TeamComposer는 단순 boolean submitting으로 유지해도 OK.
+- Compose 페이지(`apps/web/app/runs/new/[sessionId]/compose/page.tsx`)는 server-component로 DB mutation 금지 원칙 유지.
 ```
 

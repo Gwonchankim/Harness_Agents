@@ -1,7 +1,10 @@
 import { notFound } from 'next/navigation';
 
+import { prisma } from '@db/client';
+
 import { QaFlow } from '@/components/qa/QaFlow';
 
+import { resolveProviderName } from '@lib/models/catalog';
 import { loadSession } from '@lib/qa/sessionState';
 
 export const dynamic = 'force-dynamic';
@@ -14,6 +17,23 @@ export default async function QaSessionPage({
   const { sessionId } = await params;
   const session = await loadSession(sessionId);
   if (!session) notFound();
+
+  // Look up the PO model's provider so QaFlow can show the Local-models
+  // latency hint. Best-effort: if the row is missing or the provider isn't
+  // one we recognise, the hint is simply hidden.
+  const run = await prisma.run.findUnique({
+    where: { id: session.runId },
+    select: { poModelId: true },
+  });
+  let poProvider: 'openai' | 'anthropic' | 'ollama' | null = null;
+  if (run?.poModelId) {
+    const model = await prisma.modelCatalog.findUnique({
+      where: { modelId: run.poModelId },
+      select: { provider: true },
+    });
+    poProvider = model ? resolveProviderName(model.provider) : null;
+  }
+
   return (
     <section className="space-y-6">
       <div className="space-y-2">
@@ -23,7 +43,7 @@ export default async function QaSessionPage({
           auto-judge, type your own, or skip (which uses auto-judge).
         </p>
       </div>
-      <QaFlow initial={session} />
+      <QaFlow initial={session} poProvider={poProvider} />
     </section>
   );
 }

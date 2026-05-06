@@ -16,6 +16,7 @@ import type { PoQuestionOption } from '@lib/qa/skipPolicy';
 import {
   GenerateAbortedError,
   GenerateTimeoutError,
+  resolvePoGenerateTimeoutMs,
   runWithGenerateTimeout,
 } from '@lib/qa/timeout';
 import {
@@ -171,22 +172,33 @@ interface CallGenerateArgs<T> {
 }
 
 async function callGenerate<T>(args: CallGenerateArgs<T>): Promise<T> {
+  const timeoutMs = resolvePoGenerateTimeoutMs(args.provider);
   try {
-    const result = await runWithGenerateTimeout(args.signal, async (signal) => {
-      return generateObject<T>({
-        provider: args.provider,
-        modelId: args.modelId,
-        schema: args.schema,
-        messages: args.messages,
-        temperature: 0.4,
-        maxTokens: 1024,
-        signal,
-      });
-    });
+    const result = await runWithGenerateTimeout(
+      args.signal,
+      async (signal) => {
+        return generateObject<T>({
+          provider: args.provider,
+          modelId: args.modelId,
+          schema: args.schema,
+          messages: args.messages,
+          temperature: 0.4,
+          maxTokens: 1024,
+          signal,
+        });
+      },
+      timeoutMs,
+    );
     return (result as { object: T }).object;
   } catch (err) {
-    if (err instanceof GenerateAbortedError || err instanceof GenerateTimeoutError) {
-      throw err;
+    if (err instanceof GenerateAbortedError) throw err;
+    if (err instanceof GenerateTimeoutError) {
+      // Re-throw with the provider/modelId attached so the route can surface
+      // them to the user without doing its own catalog lookup.
+      throw new GenerateTimeoutError(err.timeoutMs, {
+        provider: args.provider,
+        modelId: args.modelId,
+      });
     }
     const status = extractAuthStatus(err);
     if (status != null) {

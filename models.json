@@ -64,6 +64,30 @@
       "supportsTools": true
     },
     {
+      "modelId": "gemma4:e4b",
+      "displayName": "Gemma 4 e4b (local)",
+      "provider": "ollama",
+      "endpointType": "openai-compat",
+      "costTier": "free",
+      "speedTier": "fast",
+      "recommendedUse": "Default local Ollama model for offline testing — small Gemma 4 variant.",
+      "contextWindow": 128000,
+      "maxOutputTokens": 8192,
+      "supportsTools": true
+    },
+    {
+      "modelId": "gemma4:26b",
+      "displayName": "Gemma 4 26B (local)",
+      "provider": "ollama",
+      "endpointType": "openai-compat",
+      "costTier": "free",
+      "speedTier": "standard",
+      "recommendedUse": "Larger local Gemma 4 variant for heavier offline reasoning.",
+      "contextWindow": 128000,
+      "maxOutputTokens": 8192,
+      "supportsTools": true
+    },
+    {
       "modelId": "llama3.1:8b",
       "displayName": "Llama 3.1 8B (local)",
       "provider": "ollama",

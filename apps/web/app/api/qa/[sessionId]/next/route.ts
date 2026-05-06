@@ -160,7 +160,15 @@ function mapPoError(err: unknown) {
     return NextResponse.json({ error: 'aborted' }, { status: 499 });
   }
   if (err instanceof GenerateTimeoutError) {
-    return NextResponse.json({ error: 'timeout', timeoutMs: err.timeoutMs }, { status: 504 });
+    return NextResponse.json(
+      {
+        error: 'timeout',
+        timeoutMs: err.timeoutMs,
+        provider: err.provider,
+        modelId: err.modelId,
+      },
+      { status: 504 },
+    );
   }
   if (err instanceof ProviderUnavailableError) {
     return NextResponse.json(

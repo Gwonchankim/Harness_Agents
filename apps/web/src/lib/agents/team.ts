@@ -14,6 +14,7 @@ import { redactString } from '@lib/secrets/redactor';
 import {
   GenerateAbortedError,
   GenerateTimeoutError,
+  resolvePoGenerateTimeoutMs,
   runWithGenerateTimeout,
 } from '@lib/qa/timeout';
 
@@ -72,22 +73,28 @@ async function callGenerate(
   messages: ReturnType<typeof buildTeamProposalMessages>,
   signal?: AbortSignal,
 ): Promise<TeamProposalPayload> {
+  const timeoutMs = resolvePoGenerateTimeoutMs(provider);
   try {
-    const result = await runWithGenerateTimeout(signal, async (composite) => {
-      return generateObject<TeamProposalPayload>({
-        provider,
-        modelId,
-        schema: teamProposalSchema,
-        messages,
-        temperature: 0.5,
-        maxTokens: 2048,
-        signal: composite,
-      });
-    });
+    const result = await runWithGenerateTimeout(
+      signal,
+      async (composite) => {
+        return generateObject<TeamProposalPayload>({
+          provider,
+          modelId,
+          schema: teamProposalSchema,
+          messages,
+          temperature: 0.5,
+          maxTokens: 2048,
+          signal: composite,
+        });
+      },
+      timeoutMs,
+    );
     return (result as { object: TeamProposalPayload }).object;
   } catch (err) {
-    if (err instanceof GenerateAbortedError || err instanceof GenerateTimeoutError) {
-      throw err;
+    if (err instanceof GenerateAbortedError) throw err;
+    if (err instanceof GenerateTimeoutError) {
+      throw new GenerateTimeoutError(err.timeoutMs, { provider, modelId });
     }
     const status = extractAuthStatus(err);
     if (status != null) {
