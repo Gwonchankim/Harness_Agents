@@ -16,6 +16,8 @@ Update this file at the end of each Phase.
 - Phase 1 (Providers, Tools, Secrets) implemented and verified locally on 2026-05-06.
 - Phase 2 (PO Q&A) implemented and verified locally on 2026-05-06.
 - Phase 2 correction pass applied and re-verified on 2026-05-06 (stale-pending gate, isEdit fix, sessionState test file, inline UI hint).
+- Phase 3 (Team Composition) implemented and verified locally on 2026-05-06.
+- Phase 3 tiny correction (export size guard) applied and re-verified on 2026-05-06.
 - Awaiting commit/push by user (user owns git ops).
 
 ## Phase Workflow
@@ -455,26 +457,149 @@ pnpm --filter web exec prisma migrate status
 
 ## Phase 3 — Team Composition
 
-Status: Not started
+Status: Completed (2026-05-06)
 
 ### Approved Scope
 
-- Team recall recommendations.
-- New Team proposal.
-- TeamComposer UI.
-- Initial TeamRevision.
-- `AGENTS.md` and `team.json` export.
+- Team recall recommendations (keyword + tag + domain + history score; no embeddings).
+- Team Architect proposal (5 agents, exactly 1 lead, server-resolved modelIds via `modelHint`).
+- TeamComposer UI (edit roles / system prompts / models, single-select lead).
+- Initial TeamRevision v1 with full snapshot.
+- `AGENTS.md` and `team.json` export under `projects/{projectSlug}/teams/{teamId}/`.
+- No DAG execution, no SSE, no Phase 5 feedback diff (kept scoped per user adjustment 10).
+
+### Phase 3 Pre-Implementation Checklist
+
+- [x] Phase 3 plan reviewed, refined remotely via Ultraplan, approved with ten required adjustments.
+- [x] Implementation completed.
+- [x] Verification passed (typecheck, tests, build, migrate status).
+- [x] Log updated.
+- [ ] Commit pushed. (User to commit and push.)
 
 ### Verification Targets
 
-- Proposed team created.
-- Agent model edit persists.
-- Team files written.
-- TeamRevision v1 exists.
+- Proposed team created with exactly 5 agents and 1 lead: ✅ Zod refinement + server validation in `/api/teams`.
+- Agent model edit persists: ✅ `<TeamComposer>` updates the proposal, `POST /api/teams` re-validates the user-confirmed `modelId` via `getEnabledModelOrThrow`.
+- Team files written under `projects/{projectSlug}/teams/{teamId}/`: ✅ `exportTeamFiles` via `safeJoin(workspaceRoot(), …)` with atomic temp+rename. Successes recorded as `Artifact` rows.
+- TeamRevision v1 exists: ✅ created in the same `prisma.$transaction` as Team + Agents; `Team.currentRevisionId` linked.
+- First run shows no recalled teams but shows proposed team: ✅ `recall(...)` returns `[]` for empty Project; UI shows "No recalled teams yet" notice.
+- Idempotency: ✅ `/api/teams` returns 409 `run_already_has_team` if `Run.teamId` is already set.
+- No `Team.runCount++` on selection: ✅ removed per adjustment 7. `runCount` is reserved for Phase 4/5 once Runs actually execute.
+- No DB mutation in compose page GET: ✅ page only loads session and renders shell; client island calls `/api/teams/recommend`.
 
-### Completion Notes
+### Phase 3 Verification Commands
 
-Not completed yet.
+```powershell
+pnpm install                                                                # no new deps
+pnpm --filter web typecheck
+pnpm --filter web test                                                      # 53 prior + 15 new (serialize + teamSearch) = 68
+pnpm --filter web exec next build
+pnpm --filter web exec prisma migrate status
+```
+
+### Phase 3 Created or Modified Files
+
+`apps/web/src/lib/agents/`:
+
+- `apps/web/src/lib/agents/team.prompt.ts` — Zod schemas (`teamProposalSchema`, agent schema with `modelHint` enum, tool allowlist refined against `lib/tools/policy.ALLOWED_TOOL_NAMES`).
+- `apps/web/src/lib/agents/team.ts` — `proposeNewTeam`, `resolveModelHints`. Reuses Phase 2 error classes (`ProviderUnavailableError`, `PoSchemaError`, `PoAuthError`) and the `runWithGenerateTimeout` helper.
+
+`apps/web/src/lib/search/`:
+
+- `apps/web/src/lib/search/teamSearch.ts` — `recall` (Prisma) plus pure `scoreTeams` and helpers (`tokenize`, `jaccard`, `clamp01`, `deriveTagsFromTokens`).
+- `apps/web/src/lib/search/teamSearch.test.ts` — 9 unit tests.
+
+`apps/web/src/lib/team/`:
+
+- `apps/web/src/lib/team/serialize.ts` — `toAgentsMd`, `toTeamJson`, `buildSnapshot`. Imports `ALLOWED_TOOL_NAMES` from `lib/tools/policy.ts` (single-source — no duplicate constant).
+- `apps/web/src/lib/team/serialize.test.ts` — 6 unit tests.
+
+`apps/web/src/lib/workspace/`:
+
+- `apps/web/src/lib/workspace/exportService.ts` — `exportTeamFiles`. Atomic temp+rename via `safeJoin`; never throws; returns `{ wrote, errors }` so callers can record only successful writes as `Artifact` rows.
+
+`apps/web/app/api/`:
+
+- `apps/web/app/api/teams/recommend/route.ts` — `POST { sessionId }`. Returns `{ recalled, proposal, modelCatalog }`. Uses `Run.poModelId` for the LLM call. Rejects 409 if `Run.teamId` already set.
+- `apps/web/app/api/teams/route.ts` — `POST { sessionId, choice, recalledTeamId? | proposal? }`. Single `prisma.$transaction` for new-team path: Team → Agents → TeamRevision v1, link `leadAgentId` and `currentRevisionId`, set `Run.teamId` and `Run.status='ready'`. Recalled path skips revision/exports and only flips `Run.teamId` + `Run.status`. Idempotent on `Run.teamId`. Export errors surface as `exportErrors` in 200 response.
+
+`apps/web/app/runs/new/[sessionId]/compose/`:
+
+- `apps/web/app/runs/new/[sessionId]/compose/page.tsx` — server shell only. Loads session, redirects to `/runs/new/{sessionId}` if not completed, mounts `<TeamComposer>`. **No DB mutation** per adjustment 1.
+
+`apps/web/src/components/team/`:
+
+- `apps/web/src/components/team/TeamComposer.tsx` — client orchestrator. Calls `/api/teams/recommend`, renders recalled-team cards + editable proposal panel (name, description, per-agent name/role/model/system-prompt/tools/lead-radio), surfaces `exportErrors` inline on success, redirects to `/runs/{runId}` on confirm.
+- `apps/web/src/components/team/RevisionDiffViewer.tsx` — Phase 3 stub: renders the AGENTS.md preview as a `<pre>` block. **No `diff` / `react-diff-viewer-continued` dependency** per adjustment 3.
+
+`apps/web/src/components/qa/`:
+
+- `apps/web/src/components/qa/QaFlow.tsx` — added `useEffect` redirect to `/runs/new/{sessionId}/compose` once `state.view.isComplete` flips true.
+
+`apps/web/app/`:
+
+- `apps/web/app/layout.tsx` — pill `Phase 2` → `Phase 3`.
+- `apps/web/app/page.tsx` — copy mentions team composition is wired.
+
+`apps/web/`:
+
+- `apps/web/package.json` — `test` script appended `src/lib/team/serialize.test.ts` and `src/lib/search/teamSearch.test.ts`.
+
+No schema changes. No migrations. No new dependencies.
+
+### Phase 3 Verification Results (2026-05-06)
+
+- `pnpm --filter web typecheck` — zero errors after a one-line fix: removed `.default([])` from `tags` in `team.prompt.ts` (same Zod-default vs `ZodType<T>` generic mismatch we hit in Phase 2).
+- `pnpm --filter web test` — 68 / 68 pass (6 serialize + 9 teamSearch + 19 sessionState + 8 skipPolicy + 8 redactor + 12 paths + 6 policy).
+- `pnpm --filter web exec next build` — clean Turbopack build. **14 routes**, 3 new: `/api/teams`, `/api/teams/recommend`, `/runs/new/[sessionId]/compose`.
+- `prisma migrate status` — clean (3 migrations, no Phase 3 schema work).
+
+### Phase 3 Decisions
+
+- **`modelHint` instead of `modelId`** in the proposal schema (adjustment 5). The LLM picks one of `'fast' | 'standard' | 'premium' | 'local'`; the server's `resolveModelHints` maps each hint to an enabled `ModelCatalog` row using `costTier`/`speedTier`/`provider` heuristics. `Run.poModelId` is the fallback if no row matches. The user can override the chosen model in `<TeamComposer>` before confirming; the `/api/teams` route then re-validates via `getEnabledModelOrThrow`.
+- **Tool allowlist single-source** (adjustment 6). Both the Zod refinement in `team.prompt.ts` and the AGENTS.md/team.json serializers import `ALLOWED_TOOL_NAMES` from `lib/tools/policy.ts`. No duplicated constant.
+- **Compose page is read-only** (adjustment 1). The page never sets `Run.status='composing'`; the only DB transitions are `Run.status='po_qa' → 'ready'` and `Run.teamId=null → set` inside `/api/teams`.
+- **Client-side recommend fetch** (adjustment 2). `<TeamComposer>` mounts and immediately POSTs `/api/teams/recommend`. The first server render returns instantly (no LLM call blocking page paint).
+- **No diff dependencies** (adjustment 3). `<RevisionDiffViewer>` is a single-`<pre>` preview component for Phase 3. Phase 5 will introduce the real two-revision diff.
+- **No `Team.runCount++` on selection** (adjustment 7). `runCount` is incremented by Phase 4 once Runs actually start executing.
+- **Export-after-commit** (adjustment 8). DB transaction commits the canonical Team/Agents/TeamRevision/Run-link first. `exportTeamFiles` runs after; failures surface as `exportErrors[]` in the 200 response. Only successful writes produce `Artifact` rows. The DB is never left in an ambiguous state.
+- **Idempotent team confirmation** (adjustment 9). `Run.teamId != null` ⇒ both routes return 409 with the existing `teamId`. No second team is ever created for the same Run.
+- **Recalled-team selection** does not create a TeamRevision and does not export new files. It only sets `Run.teamId` and `Run.status='ready'`.
+- **Phase 3 schema unchanged** — `Team.tags`/`Agent.toolsAllowed` etc. were already provisioned in Phase 0; `TeamRevision` already has `agentsSnapshot`, `agentsMd`, `teamJson`, `proposedBy`, `approvedBy`, `sourceRunId`, `feedbackBatchId`, `reason`, `approvedAt`. Phase 5 will reuse this shape.
+
+### Phase 3 Deviations from `IMPLEMENTATION.md`
+
+- IMPLEMENTATION.md lists "Extend `apps/web/src/lib/agents/po.ts`". The implementation puts team-specific logic in a sibling `team.ts` + `team.prompt.ts` to keep `po.ts` focused on QA. The PO-side error classes (`PoAuthError`, `PoSchemaError`, `ProviderUnavailableError`) are shared between modules.
+- IMPLEMENTATION.md does not list `apps/web/src/lib/team/serialize.test.ts` or `apps/web/src/lib/search/teamSearch.test.ts`. They are added so the pure logic is auditable without DB fixtures (matching the Phase 2 sessionState pattern).
+
+### Phase 3 Remaining Risks
+
+- **Manual smoke not yet executed** in this session. Build + types + tests are green; the live `/runs/new/{id}/compose` flow with a real provider has not been clicked through. Recommended path: complete a QaSession (Phase 2), confirm the redirect to `/compose` lands on `<TeamComposer>`, edit one agent's model and one system prompt, confirm, observe `projects/default/teams/{teamId}/AGENTS.md` and `team.json` on disk plus the matching `Artifact` rows in DB.
+- **LLM may propose `modelHint` values the heuristics don't satisfy** (e.g. asking for `'local'` when no Ollama row is enabled). `resolveModelHints` falls back to `Run.poModelId`, which is always a valid enabled row. The user sees the fallback in the composer dropdown and can override.
+- **Recall scoring is intentionally simple.** Tokenizer is whitespace + lowercase + tiny stopword set; no stemming or fuzzy matching. Embeddings are roadmap.
+- **Export failure visibility** depends on the user reading the inline amber notice from `<TeamComposer>`. There is no automatic retry. A future "Re-export team files" affordance is left for Phase 5+ if the user requests it.
+- **Concurrent team confirms** are blocked by the `Run.teamId` idempotency check, but two simultaneous `recommend` calls will both invoke the LLM. Cost is bounded by the user's session count and Ollama is free.
+
+### Phase 3 Tiny Correction (2026-05-06) — export payload size guard
+
+A review surfaced one missing guard: `exportService.ts` had no upper bound on the per-file payload size, while the runtime fs tool (`lib/tools/fsTools.ts`) already enforces a 5 MB limit. Aligned them.
+
+**Change**
+
+- `apps/web/src/lib/workspace/exportService.ts` — added `export const MAX_EXPORT_BYTES = 5 * 1024 * 1024;`. `writeAtomic` now checks `Buffer.byteLength(content, 'utf8')` before mkdir/temp-write and throws `export exceeds <N> bytes` if exceeded. The existing `try`/`catch` inside `exportTeamFiles` still routes the failure into `errors[]` per-file — so an oversize `AGENTS.md` does NOT block a normal `team.json` write, and the DB transaction stays committed regardless.
+
+**Test added**
+
+- `apps/web/src/lib/workspace/exportService.test.ts` (3 cases): guard surfaces oversize payload as a single `errors[]` entry without writing a file; the sibling under-limit file still writes; `MAX_EXPORT_BYTES` exposes the documented `5 * 1024 * 1024` value. Test reroutes `HARNESS_WORKSPACE_ROOT` to a `mkdtemp` sandbox and cleans up on exit.
+- `apps/web/package.json` — `test` script appended `src/lib/workspace/exportService.test.ts`.
+
+**Verification results**
+
+- `pnpm --filter web typecheck` — zero errors.
+- `pnpm --filter web test` — 71 / 71 pass (3 new exportService + 68 prior).
+- `pnpm --filter web exec next build` — clean Turbopack build, same 14 routes (no schema or route additions).
+
+No schema change. No new dependencies.
 
 ## Phase 4 — DAG Executor and Run Progress
 
@@ -669,16 +794,20 @@ pnpm --filter web build
 
 Implemented Providers, Tools, Secrets per the revised plan. Build green, 26/26 tests pass, no schema changes.
 
-### Phase 2 work completed today
+### Phase 2 work completed earlier today
 
-Implemented the PO Q&A flow per the Ultraplan-refined plan with eight user-required adjustments. Schema migrated (`Run.poModelId`, `QaQuestion.regeneratedAt`, `QaQuestion.isFinal`, `QaAnswer.updatedAt`). Build green, 34/34 tests pass.
+Implemented the PO Q&A flow per the Ultraplan-refined plan with eight user-required adjustments. Schema migrated (`Run.poModelId`, `QaQuestion.regeneratedAt`, `QaQuestion.isFinal`, `QaAnswer.updatedAt`). Build green, 53/53 tests pass after the correction pass.
+
+### Phase 3 work completed today
+
+Implemented Team Composition per the Ultraplan-refined plan with ten user-required adjustments. No schema change. Build green, 68/68 tests pass.
 
 ### Next session: where to start
 
-1. Review `PHASE_LOG.md` "Phase 2 — PO Q&A" section.
-2. (If not done in this terminal) commit and push Phase 1 + Phase 2.
-3. Run `pnpm --filter web dev` and click through `/runs/new` end-to-end with Ollama (or any provider with a configured key) — answer Q1..Q6 with mixed options (1–4 / 5 auto-judge / 6 custom / skip), then edit Q2 and regenerate Q3..Q5.
-4. Open Phase 3 planning per `IMPLEMENTATION.md` § "Phase 3 — Team Composition". Do not write Phase 3 code until the detailed plan is reviewed and approved.
+1. Review `PHASE_LOG.md` "Phase 3 — Team Composition" section.
+2. (If not done in this terminal) commit and push Phase 1 + 2 + 3.
+3. Run `pnpm --filter web dev` and click through end-to-end: `/runs/new` → answer 5–6 questions → `/runs/new/{id}/compose` → edit a model + system prompt → confirm → confirm `projects/default/teams/{teamId}/AGENTS.md` and `team.json` on disk plus matching `Artifact` rows.
+4. Open Phase 4 planning per `IMPLEMENTATION.md` § "Phase 4 — DAG Executor and Run Progress". Do not write Phase 4 code until the detailed plan is reviewed and approved.
 
 ## Resume Prompt — paste into next session
 

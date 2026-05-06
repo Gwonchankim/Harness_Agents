@@ -6,10 +6,11 @@ export default function HomePage() {
       <div className="space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight">Harness Agents</h1>
         <p className="max-w-2xl opacity-70">
-          Local-first multi-agent workspace. Phase 2 adds the PO Q&A flow on top of the
-          Phase 1 runtime foundation: enter a prompt, pick a PO model, and answer 5–6
-          dynamic clarification questions (with edit + regenerate). Team composition,
-          Lead DAG, and reports land in later phases.
+          Local-first multi-agent workspace. Phase 3 adds team composition: after the PO
+          Q&A completes, the Team Architect proposes a 5-agent team (1 lead) that you can
+          edit and confirm. Confirming creates the Team, Agents, TeamRevision v1, exports
+          AGENTS.md + team.json under <code>projects/.../teams/</code>, and marks the run
+          ready for execution. DAG execution and reports land in later phases.
         </p>
       </div>
 

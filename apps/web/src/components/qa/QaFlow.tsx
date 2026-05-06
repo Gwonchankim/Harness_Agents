@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { useEffect, useReducer } from 'react';
 
 import type { SessionView } from '@lib/qa/sessionState';
@@ -44,12 +45,22 @@ function reducer(state: State, action: Action): State {
 }
 
 export function QaFlow({ initial }: Props) {
+  const router = useRouter();
   const [state, dispatch] = useReducer(reducer, {
     view: initial,
     busy: false,
     error: null,
     editingQuestionId: null,
   });
+
+  // Phase 3: when the session reaches the completed state, hand off to the
+  // compose page. The redirect is client-side so the user sees the QA panel
+  // until their last answer is acknowledged.
+  useEffect(() => {
+    if (state.view.isComplete) {
+      router.push(`/runs/new/${state.view.sessionId}/compose` as never);
+    }
+  }, [state.view.isComplete, state.view.sessionId, router]);
 
   // On mount and after every change, if there's no current question and the
   // session isn't complete and there's no stale question outstanding, ask the
@@ -192,7 +203,7 @@ export function QaFlow({ initial }: Props) {
 
       {state.view.isComplete ? (
         <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm">
-          QA session complete. Phase 3 (Team Composition) will pick up from here.
+          QA session complete. Redirecting to team composition…
         </div>
       ) : active ? (
         <QuestionCard question={active} busy={state.busy} onSubmit={submit} />
