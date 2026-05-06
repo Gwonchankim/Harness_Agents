@@ -39,6 +39,9 @@ dev.db
 # local workspace artifacts (per Phase 0 design)
 projects/
 
+# local-only secret store fallback key (Phase 1 — see secrets store)
+apps/web/.local/
+
 # coverage / test
 coverage
 .nyc_output
