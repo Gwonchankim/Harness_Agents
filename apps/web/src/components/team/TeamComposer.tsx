@@ -1,7 +1,7 @@
 'use client';
 
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
 
 import { ALLOWED_TOOL_NAMES } from '@lib/tools/policy';
 
@@ -33,6 +33,8 @@ interface RecalledTeamSummary {
   };
 }
 
+type ProviderKey = 'openai' | 'anthropic' | 'ollama';
+
 interface ProposedAgent {
   name: string;
   role: string;
@@ -40,7 +42,7 @@ interface ProposedAgent {
   systemPrompt: string;
   modelId: string;
   modelHint: 'fast' | 'standard' | 'premium' | 'local';
-  provider: 'openai' | 'anthropic' | 'ollama';
+  provider: ProviderKey;
   toolsAllowed: string[];
   tags: string[];
 }
@@ -59,22 +61,51 @@ interface RecommendResponse {
   modelCatalog: ModelCatalogClient[];
 }
 
+interface SuccessState {
+  mode: 'new' | 'recalled' | 'already';
+  runId: string;
+  teamId: string;
+  teamName?: string;
+  exportErrors?: Array<{ path: string; message: string }>;
+}
+
+interface ProviderTab {
+  key: ProviderKey;
+  label: string;
+}
+
 interface Props {
   sessionId: string;
 }
 
+const PROVIDER_TABS: readonly ProviderTab[] = [
+  { key: 'openai', label: 'OpenAI' },
+  { key: 'anthropic', label: 'Anthropic' },
+  { key: 'ollama', label: 'Local' },
+];
+
 const TOOL_OPTIONS = [...ALLOWED_TOOL_NAMES];
 
+function isProviderKey(value: string): value is ProviderKey {
+  return value === 'openai' || value === 'anthropic' || value === 'ollama';
+}
+
+function pickProviderModelId(
+  provider: ProviderKey,
+  models: readonly ModelCatalogClient[],
+): string {
+  const inProvider = models.filter((m) => m.provider === provider);
+  if (inProvider.length === 0) return '';
+  return inProvider.find((m) => m.isDefault)?.modelId ?? inProvider[0]!.modelId;
+}
+
 export function TeamComposer({ sessionId }: Props) {
-  const router = useRouter();
   const [data, setData] = useState<RecommendResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [editable, setEditable] = useState<Proposal | null>(null);
-  const [exportErrors, setExportErrors] = useState<
-    Array<{ path: string; message: string }> | null
-  >(null);
+  const [success, setSuccess] = useState<SuccessState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -110,6 +141,19 @@ export function TeamComposer({ sessionId }: Props) {
     };
   }, [sessionId]);
 
+  const modelsByProvider = useMemo(() => {
+    const map: Record<ProviderKey, ModelCatalogClient[]> = {
+      openai: [],
+      anthropic: [],
+      ollama: [],
+    };
+    if (!data) return map;
+    for (const m of data.modelCatalog) {
+      if (isProviderKey(m.provider)) map[m.provider].push(m);
+    }
+    return map;
+  }, [data]);
+
   const previewMd = useMemo(() => {
     if (!editable) return '';
     return `# ${editable.name}\n\n${editable.description ?? ''}\n\n${editable.agents
@@ -120,12 +164,23 @@ export function TeamComposer({ sessionId }: Props) {
       .join('\n\n')}`;
   }, [editable]);
 
+  const canConfirm = useMemo(() => {
+    if (!editable) return false;
+    return editable.agents.every((a) => a.modelId.length > 0);
+  }, [editable]);
+
   function updateAgent(index: number, patch: Partial<ProposedAgent>) {
     setEditable((prev) => {
       if (!prev) return prev;
       const agents = prev.agents.map((a, i) => (i === index ? { ...a, ...patch } : a));
       return { ...prev, agents };
     });
+  }
+
+  function updateAgentProvider(index: number, nextProvider: ProviderKey) {
+    if (!data) return;
+    const nextModelId = pickProviderModelId(nextProvider, data.modelCatalog);
+    updateAgent(index, { provider: nextProvider, modelId: nextModelId });
   }
 
   function setLead(index: number) {
@@ -162,13 +217,25 @@ export function TeamComposer({ sessionId }: Props) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId, choice: 'recalled', recalledTeamId: teamId }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setError((body as { error?: string }).error ?? `HTTP ${res.status}`);
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        teamId?: string;
+        runId?: string;
+      };
+      if (
+        res.status === 409 &&
+        body.error === 'run_already_has_team' &&
+        typeof body.runId === 'string' &&
+        typeof body.teamId === 'string'
+      ) {
+        setSuccess({ mode: 'already', runId: body.runId, teamId: body.teamId });
         return;
       }
-      const body = (await res.json()) as { runId: string };
-      router.push(`/runs/${body.runId}` as never);
+      if (!res.ok || typeof body.runId !== 'string' || typeof body.teamId !== 'string') {
+        setError(body.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setSuccess({ mode: 'recalled', runId: body.runId, teamId: body.teamId });
     } finally {
       setSubmitting(false);
     }
@@ -178,29 +245,45 @@ export function TeamComposer({ sessionId }: Props) {
     if (!editable) return;
     setSubmitting(true);
     setError(null);
-    setExportErrors(null);
     try {
       const res = await fetch('/api/teams', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ sessionId, choice: 'new', proposal: editable }),
       });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        setError((body as { error?: string }).error ?? `HTTP ${res.status}`);
-        return;
-      }
-      const body = (await res.json()) as {
-        runId: string;
+      const body = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        teamId?: string;
+        runId?: string;
         exportErrors?: Array<{ path: string; message: string }>;
       };
-      if (body.exportErrors && body.exportErrors.length > 0) {
-        setExportErrors(body.exportErrors);
+      if (
+        res.status === 409 &&
+        body.error === 'run_already_has_team' &&
+        typeof body.runId === 'string' &&
+        typeof body.teamId === 'string'
+      ) {
+        setSuccess({ mode: 'already', runId: body.runId, teamId: body.teamId });
+        return;
       }
-      router.push(`/runs/${body.runId}` as never);
+      if (!res.ok || typeof body.runId !== 'string' || typeof body.teamId !== 'string') {
+        setError(body.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      setSuccess({
+        mode: 'new',
+        runId: body.runId,
+        teamId: body.teamId,
+        teamName: editable.name,
+        exportErrors: body.exportErrors,
+      });
     } finally {
       setSubmitting(false);
     }
+  }
+
+  if (success) {
+    return <SuccessPanel success={success} />;
   }
 
   if (loading) {
@@ -294,81 +377,110 @@ export function TeamComposer({ sessionId }: Props) {
         </div>
 
         <ul className="space-y-4">
-          {editable.agents.map((a, i) => (
-            <li
-              key={i}
-              className="space-y-3 rounded-lg border border-current/15 p-4 text-sm"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <input
-                  type="text"
-                  value={a.name}
-                  onChange={(e) => updateAgent(i, { name: e.target.value })}
-                  className="flex-1 rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm font-medium outline-none focus:border-current/50"
-                />
-                <label className="flex items-center gap-2 text-xs">
+          {editable.agents.map((a, i) => {
+            const providerModels = modelsByProvider[a.provider];
+            const providerHasModels = providerModels.length > 0;
+            return (
+              <li
+                key={i}
+                className="space-y-3 rounded-lg border border-current/15 p-4 text-sm"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <input
-                    type="radio"
-                    name="lead"
-                    checked={a.isLead}
-                    onChange={() => setLead(i)}
+                    type="text"
+                    value={a.name}
+                    onChange={(e) => updateAgent(i, { name: e.target.value })}
+                    className="flex-1 rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm font-medium outline-none focus:border-current/50"
                   />
-                  Lead
-                </label>
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs opacity-70">Role</label>
-                <input
-                  type="text"
-                  value={a.role}
-                  onChange={(e) => updateAgent(i, { role: e.target.value })}
-                  className="w-full rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm outline-none focus:border-current/50"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs opacity-70">Model</label>
-                <select
-                  value={a.modelId}
-                  onChange={(e) => updateAgent(i, { modelId: e.target.value })}
-                  className="w-full rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm outline-none focus:border-current/50"
-                >
-                  {data.modelCatalog.map((m) => (
-                    <option key={m.modelId} value={m.modelId}>
-                      {m.displayName} · {m.provider}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-[11px] opacity-60">hint: {a.modelHint}</p>
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs opacity-70">System prompt</label>
-                <textarea
-                  rows={4}
-                  value={a.systemPrompt}
-                  onChange={(e) => updateAgent(i, { systemPrompt: e.target.value })}
-                  className="w-full resize-y rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm outline-none focus:border-current/50"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs opacity-70">Tools allowed</label>
-                <div className="flex flex-wrap gap-2">
-                  {TOOL_OPTIONS.map((tool) => (
-                    <label
-                      key={tool}
-                      className="flex items-center gap-2 rounded-full border border-current/20 px-2 py-0.5 text-xs"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={a.toolsAllowed.includes(tool)}
-                        onChange={() => toggleTool(i, tool)}
-                      />
-                      {tool}
-                    </label>
-                  ))}
+                  <label className="flex items-center gap-2 text-xs">
+                    <input
+                      type="radio"
+                      name="lead"
+                      checked={a.isLead}
+                      onChange={() => setLead(i)}
+                    />
+                    Lead
+                  </label>
                 </div>
-              </div>
-            </li>
-          ))}
+                <div className="space-y-1">
+                  <label className="text-xs opacity-70">Role</label>
+                  <input
+                    type="text"
+                    value={a.role}
+                    onChange={(e) => updateAgent(i, { role: e.target.value })}
+                    className="w-full rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm outline-none focus:border-current/50"
+                  />
+                </div>
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <div className="space-y-1">
+                    <label className="text-xs opacity-70">Provider</label>
+                    <select
+                      value={a.provider}
+                      onChange={(e) => {
+                        const next = e.target.value;
+                        if (isProviderKey(next)) updateAgentProvider(i, next);
+                      }}
+                      className="w-full rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm outline-none focus:border-current/50"
+                    >
+                      {PROVIDER_TABS.map((tab) => (
+                        <option key={tab.key} value={tab.key}>
+                          {tab.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-xs opacity-70">Model</label>
+                    <select
+                      value={a.modelId}
+                      onChange={(e) => updateAgent(i, { modelId: e.target.value })}
+                      disabled={!providerHasModels}
+                      className="w-full rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm outline-none focus:border-current/50 disabled:opacity-60"
+                    >
+                      {providerHasModels ? (
+                        providerModels.map((m) => (
+                          <option key={m.modelId} value={m.modelId}>
+                            {m.displayName}
+                            {m.isDefault ? ' · default' : ''}
+                          </option>
+                        ))
+                      ) : (
+                        <option value="">No enabled models</option>
+                      )}
+                    </select>
+                  </div>
+                </div>
+                <p className="text-[11px] opacity-60">hint: {a.modelHint}</p>
+                <div className="space-y-1">
+                  <label className="text-xs opacity-70">System prompt</label>
+                  <textarea
+                    rows={4}
+                    value={a.systemPrompt}
+                    onChange={(e) => updateAgent(i, { systemPrompt: e.target.value })}
+                    className="w-full resize-y rounded-md border border-current/20 bg-transparent px-2 py-1 text-sm outline-none focus:border-current/50"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs opacity-70">Tools allowed</label>
+                  <div className="flex flex-wrap gap-2">
+                    {TOOL_OPTIONS.map((tool) => (
+                      <label
+                        key={tool}
+                        className="flex items-center gap-2 rounded-full border border-current/20 px-2 py-0.5 text-xs"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={a.toolsAllowed.includes(tool)}
+                          onChange={() => toggleTool(i, tool)}
+                        />
+                        {tool}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </li>
+            );
+          })}
         </ul>
 
         <div className="space-y-3">
@@ -378,17 +490,11 @@ export function TeamComposer({ sessionId }: Props) {
           <RevisionDiffViewer agentsMd={previewMd} />
         </div>
 
-        {exportErrors ? (
-          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
-            <strong>Team saved.</strong> Some workspace files failed to write:
-            <ul className="mt-1 list-disc pl-5">
-              {exportErrors.map((e) => (
-                <li key={e.path}>
-                  {e.path}: {e.message}
-                </li>
-              ))}
-            </ul>
-          </div>
+        {!canConfirm ? (
+          <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            One or more agents has no enabled model. Pick a provider with at least one enabled
+            model in Settings before confirming.
+          </p>
         ) : null}
 
         {error ? (
@@ -399,13 +505,69 @@ export function TeamComposer({ sessionId }: Props) {
 
         <button
           type="button"
-          disabled={submitting}
+          disabled={submitting || !canConfirm}
           onClick={confirmNew}
           className="rounded-md border border-current/30 px-4 py-2 text-sm font-medium hover:bg-current/5 disabled:opacity-40"
         >
           {submitting ? 'Saving…' : 'Confirm and create team'}
         </button>
       </section>
+    </div>
+  );
+}
+
+function SuccessPanel({ success }: { success: SuccessState }) {
+  const headline =
+    success.mode === 'already' ? 'Team already confirmed' : 'Team confirmed';
+  const description =
+    success.mode === 'new'
+      ? `Team ${success.teamName ? `"${success.teamName}" ` : ''}created and saved. The run is ready for execution.`
+      : success.mode === 'recalled'
+        ? 'Recalled team attached. The run is ready for execution.'
+        : 'This run already had a team confirmed earlier. The previous team stays linked.';
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-800 dark:text-emerald-200">
+        <h2 className="text-base font-medium">{headline}</h2>
+        <p className="mt-2">{description}</p>
+        <dl className="mt-3 grid grid-cols-1 gap-2 text-xs sm:grid-cols-2">
+          <div>
+            <dt className="opacity-70">Run ID</dt>
+            <dd className="break-all font-mono">{success.runId}</dd>
+          </div>
+          <div>
+            <dt className="opacity-70">Team ID</dt>
+            <dd className="break-all font-mono">{success.teamId}</dd>
+          </div>
+        </dl>
+      </div>
+
+      {success.exportErrors && success.exportErrors.length > 0 ? (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+          <strong>Some workspace files failed to write:</strong>
+          <ul className="mt-1 list-disc pl-5">
+            {success.exportErrors.map((e) => (
+              <li key={e.path}>
+                {e.path}: {e.message}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      <p className="text-xs opacity-70">
+        Run detail page lands in Phase 4 (DAG executor + SSE). Until then, the run sits in the
+        <code className="mx-1 rounded bg-current/10 px-1 py-0.5">ready</code>
+        state in the database.
+      </p>
+
+      <Link
+        href="/"
+        className="inline-block rounded-md border border-current/30 px-3 py-1 text-xs font-medium hover:bg-current/5"
+      >
+        Back to home
+      </Link>
     </div>
   );
 }

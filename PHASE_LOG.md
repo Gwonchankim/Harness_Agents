@@ -22,9 +22,8 @@ Update this file at the end of each Phase.
 - Phase 3 local Ollama QA timeout correction applied and re-verified on 2026-05-06 (provider-specific PO timeout, enriched 504 body, QaFlow error gate + Retry UI, Ollama hint).
 - Phase 3 QA busy-state + interaction-lock UI correction applied and re-verified on 2026-05-06 (option-6 visual lockdown, pick() guard, Skip visual disable, Timeline flicker fix via interactionLocked).
 - Phase 3 QA pending-operation status correction applied and re-verified on 2026-05-06 (replaced boolean busy with explicit pendingOperation enum so the answer→next handoff label never flickers).
-- **Open issues before Phase 4** (recorded 2026-05-06 — see "Phase 3 — Remaining Issues" section below):
-  - Compose team's per-Agent model selector still uses a single flat dropdown; needs the Provider + Model two-stage pattern that `<NewRunForm>` already uses.
-  - On confirm, `<TeamComposer>` navigates to `/runs/[runId]` which 404s — that route doesn't exist until Phase 4. Should show an in-place success state instead.
+- Phase 3 Compose Team correction applied and re-verified on 2026-05-07 (TeamComposer Provider + Model 2-stage selector with consistent provider/modelId state; in-place success panel replacing the 404-prone `router.push('/runs/[runId]')`; 409 `run_already_has_team` mapped to the same success panel).
+- **Open issues before Phase 4** (recorded 2026-05-06, narrowed 2026-05-07):
   - Local Ollama compose hit `po_schema_error` once during smoke; Retry succeeded on the next click. Auto-retry / friendlier guidance deferred.
 - Awaiting commit/push by user (user owns git ops).
 
@@ -795,6 +794,67 @@ No other component touched. `<QuestionCard>` and `<Timeline>` continue to receiv
 - `pnpm --filter web exec next build` — clean Turbopack build, same 14 routes.
 
 No schema change. No new dependencies. No API contract change.
+
+### Phase 3 Compose Team Correction (2026-05-07)
+
+Two open Compose-page issues from the 2026-05-06 smoke pass were closed before commit. Single-component change; no schema, no migration, no new dependency, no API contract change.
+
+**Issues fixed**
+
+1. **TeamComposer per-Agent model selector was a single flat `<select>`.** Lines 329-340 of the prior file rendered every enabled model from every provider in one dropdown, so the user couldn't filter by provider and a switch between providers required scanning the whole list. Replaced with the same two-stage pattern `<NewRunForm>` (PO model selector) already uses: a Provider `<select>` (OpenAI / Anthropic / Local) plus a Model `<select>` filtered by selected provider.
+2. **Confirm navigated to `/runs/[runId]`, which 404s in Phase 3.** Both `confirmRecalled()` and `confirmNew()` called `router.push(\`/runs/${runId}\`)` on 200, but Phase 4 hasn't shipped the Run detail page yet, so the success path landed on Next's 404. Replaced with an in-place `<SuccessPanel>` rendered inside the same component. The 409 `run_already_has_team` response (which already returns `{ teamId, runId }` in the body) routes to the same panel with `mode: 'already'`.
+
+**Behavior, per agent row**
+
+- Provider select reads/writes `agent.provider`. On change, `updateAgentProvider(i, next)` resolves the new modelId via `pickProviderModelId(next, modelCatalog)` (prefer `isDefault`, else first enabled, else `''`) and patches `{ provider, modelId }` together so the two fields never drift.
+- Model select reads/writes `agent.modelId` only; `provider` stays.
+- Provider with zero enabled models ⇒ Model select renders `<option value="">No enabled models</option>` and is `disabled`.
+- `canConfirm` is now derived: `editable.agents.every(a => a.modelId.length > 0)`. The Confirm button is disabled and an amber notice appears when any agent has no model. Avoids round-tripping to the server only to receive `agent_model_unknown`.
+- The `hint: {modelHint}` traceability line stays.
+
+**Behavior, on confirm**
+
+- 200 OK on `choice: 'new'` ⇒ `setSuccess({ mode: 'new', runId, teamId, teamName: editable.name, exportErrors })`.
+- 200 OK on `choice: 'recalled'` ⇒ `setSuccess({ mode: 'recalled', runId, teamId })`.
+- 409 `run_already_has_team` (either path) ⇒ `setSuccess({ mode: 'already', runId, teamId })` from response body. The component never enters an error state in this case.
+- All other non-OK responses fall through to the existing inline error display.
+- `useRouter` import and call removed entirely.
+
+**Success panel content**
+
+- Emerald headline (`Team confirmed` / `Team already confirmed`), short description tailored per mode, run + team IDs in monospace, optional amber `exportErrors` block, and a Phase 4 reminder ("Run detail page lands in Phase 4. Until then, the run sits in the `ready` state in the database."). A "Back to home" `<Link>` returns the user to `/`.
+
+**Files touched**
+
+- `apps/web/src/components/team/TeamComposer.tsx` — added `PROVIDER_TABS`, `isProviderKey`, `pickProviderModelId` helpers; added `modelsByProvider` `useMemo`; added `updateAgentProvider`; replaced single Model `<select>` with Provider + Model two-stage; added `canConfirm` derived guard with amber notice; added `success` state, replaced both `router.push` calls with `setSuccess`, mapped `run_already_has_team` 409 to `mode: 'already'`; added `<SuccessPanel>` sub-component; dropped `useRouter` import; added `Link` import.
+
+**Verification commands run**
+
+```powershell
+pnpm --filter web typecheck
+pnpm --filter web test
+pnpm --filter web exec next build
+pnpm --filter web exec prisma migrate status
+```
+
+**Verification results (2026-05-07)**
+
+- `pnpm --filter web typecheck` — zero errors.
+- `pnpm --filter web test` — 71 / 71 pass (no test changes; component-level testing remains out of scope per the prior pre-commit decision).
+- `pnpm --filter web exec next build` — clean Turbopack build, same 14 routes (no schema or route additions).
+- `pnpm --filter web exec prisma migrate status` — clean (3 migrations, schema in sync).
+
+**Decisions during the correction**
+
+- Two-stage selector lives inline inside `<TeamComposer>` rather than being extracted to a shared `<ProviderModelSelector>` because the only other consumer (`<NewRunForm>`) has subtly different UX (single PO model, no per-row state, different prop shape). Premature extraction would have meant a wider abstraction surface than the duplicated 25 lines.
+- `mode: 'already'` keeps the success panel ergonomic for the back-button case: a user who refreshes `/runs/new/{sessionId}/compose` after confirming will land on the panel immediately because `/api/teams` will 409 with the existing `teamId` + `runId`. No need for a separate "this run is locked" UI.
+- `canConfirm` only checks `modelId.length > 0`. Server still re-validates `getEnabledModelOrThrow` and lead-count invariants. The UI guard is purely UX, not the source of truth.
+- The first Open Issue from 2026-05-06 ("po_schema_error once during local Ollama smoke; Retry succeeded") is intentionally **not** addressed in this correction — it is a separate concern (PO output schema robustness on weaker models), and the Retry flow already exists.
+
+**Risks / remaining items**
+
+- Manual smoke not yet executed in this session. Build + types + tests are green; the live Provider switch and 409-already flow have not been clicked through. Recommended path: complete a QaSession, switch one agent's provider Anthropic → Local and confirm `modelId` auto-flips to first enabled Ollama model; click Confirm and observe the in-place success panel; navigate back to the same `/compose` URL and observe the "already confirmed" success panel via the recommend 409 path. (Note: recommend 409 still surfaces as a generic error today because that response shape only includes `teamId`, not `runId`. Out of scope for this correction.)
+- If the LLM ever proposes a `provider` that disagrees with its own resolved `modelId`'s provider, the dropdowns will reflect `agent.provider` and the Model list will not contain `agent.modelId` — the user sees a blank-ish selection and can pick. The server contract (`resolveModelHints`) currently keeps them coherent, so this is a defensive note rather than a known bug.
 
 ## Phase 4 — DAG Executor and Run Progress
 
