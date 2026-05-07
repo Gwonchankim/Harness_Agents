@@ -6,11 +6,11 @@ export default function HomePage() {
       <div className="space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight">Harness Agents</h1>
         <p className="max-w-2xl opacity-70">
-          Local-first multi-agent workspace. Phase 3 adds team composition: after the PO
-          Q&A completes, the Team Architect proposes a 5-agent team (1 lead) that you can
-          edit and confirm. Confirming creates the Team, Agents, TeamRevision v1, exports
-          AGENTS.md + team.json under <code>projects/.../teams/</code>, and marks the run
-          ready for execution. DAG execution and reports land in later phases.
+          Local-first multi-agent workspace. Phase 4 wires the DAG executor: once a Team is
+          confirmed, the Lead Agent generates an ExecutionPlan, the executor runs each task
+          sequentially, and a per-run page streams events over SSE (with polling fallback).
+          Tasks, RunEvents, and a <code>plan.md</code> artifact are persisted; final
+          <code className="mx-1">result.md</code> / <code>report.md</code> synthesis lands in Phase 5.
         </p>
       </div>
 

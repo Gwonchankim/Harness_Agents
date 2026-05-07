@@ -557,17 +557,25 @@ function SuccessPanel({ success }: { success: SuccessState }) {
       ) : null}
 
       <p className="text-xs opacity-70">
-        Run detail page lands in Phase 4 (DAG executor + SSE). Until then, the run sits in the
+        The run sits in the
         <code className="mx-1 rounded bg-current/10 px-1 py-0.5">ready</code>
-        state in the database.
+        state. Open the run detail page to start the DAG executor.
       </p>
 
-      <Link
-        href="/"
-        className="inline-block rounded-md border border-current/30 px-3 py-1 text-xs font-medium hover:bg-current/5"
-      >
-        Back to home
-      </Link>
+      <div className="flex flex-wrap gap-2">
+        <Link
+          href={`/runs/${success.runId}` as never}
+          className="inline-block rounded-md border border-current/30 px-3 py-1 text-xs font-medium hover:bg-current/5"
+        >
+          Open run →
+        </Link>
+        <Link
+          href="/"
+          className="inline-block rounded-md border border-current/30 px-3 py-1 text-xs font-medium hover:bg-current/5"
+        >
+          Back to home
+        </Link>
+      </div>
     </div>
   );
 }
