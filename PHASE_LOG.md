@@ -24,10 +24,10 @@ Update this file at the end of each Phase.
 - Phase 3 QA pending-operation status correction applied and re-verified on 2026-05-06 (replaced boolean busy with explicit pendingOperation enum so the answer→next handoff label never flickers).
 - Phase 3 Compose Team correction applied and re-verified on 2026-05-07 (TeamComposer Provider + Model 2-stage selector with consistent provider/modelId state; in-place success panel replacing the 404-prone `router.push('/runs/[runId]')`; 409 `run_already_has_team` mapped to the same success panel).
 - Phase 4 (DAG Executor and Run Progress) implemented and verified locally on 2026-05-07 on branch `phase-4-dag-executor`. No schema change, no migration, no new dependencies. 89 / 89 tests pass; 18 routes (4 new); typecheck and prisma migrate status clean.
+- Phase 4 commit `09eada1 Add phase 4 DAG executor and run progress` pushed to `origin/phase-4-dag-executor` on 2026-05-07. PR / compare link: <https://github.com/Gwonchankim/Harness_Agents/compare/main...phase-4-dag-executor?expand=1>.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose hit `po_schema_error` once during smoke; Retry succeeded on the next click. Auto-retry / friendlier guidance deferred.
-  - Phase 4 manual smoke (real Lead plan + agent execution + SSE) not yet exercised in this session — only build/test/migration verification.
-- Awaiting commit/push by user (user owns git ops).
+  - Phase 4 manual smoke (real Lead plan + agent execution + SSE) not yet exercised — first task on the next session before any merge to `main`.
 
 ## Phase Workflow
 
@@ -985,6 +985,83 @@ Unchanged: `prisma/schema.prisma`, dependency list, prior route/feature behavior
 - **No cancellation API.** A user who clicks Start can't currently cancel mid-run. The fire-and-forget executor does respect a parent `signal` if one is wired in, but no UI button forwards one. Phase 4.x can add `/cancel` if requested.
 - **Agent name uniqueness within a Team is not DB-enforced.** Phase 3 validation does not gate it; Phase 4's `validatePlanShape` raises `ambiguous_agent_name` if the LLM picks an ambiguous name, but a deterministic earlier failure would be better. Holding for a Phase 3 sidecar fix to `/api/teams` validation if the user wants.
 - **Tool calls during agent runs deferred** — explicitly out of scope. Mentioned in the system prompt so the agent does not try to invent tool calls; the registry remains in place for Phase 5+.
+
+### Session End — 2026-05-07
+
+Stopped here. Phase 4 is implemented, committed, and pushed; tomorrow opens with manual smoke, then merge, then Phase 5 plan review.
+
+**Branch / commit / push state**
+
+- Branch: `phase-4-dag-executor`.
+- Commit: `09eada1 Add phase 4 DAG executor and run progress` (24 files changed, +2524 / −24).
+- Pushed to `origin/phase-4-dag-executor` on 2026-05-07.
+- PR / compare: <https://github.com/Gwonchankim/Harness_Agents/compare/main...phase-4-dag-executor?expand=1>.
+- `main` still at `7461650 Fix phase 3 compose team handoff` — Phase 4 is NOT yet merged to `main`.
+
+**Verification at session end (all PASS)**
+
+| Command | Result |
+|---|---|
+| `pnpm --filter web typecheck` | zero errors |
+| `pnpm --filter web test` | 89 / 89 pass (71 prior + 11 `topo` + 7 `events/redactor`) |
+| `pnpm --filter web exec next build` | clean Turbopack build, 18 routes |
+| `pnpm --filter web exec prisma migrate status` | 3 migrations, schema in sync |
+
+**Phase 4 scope landed**
+
+- Lead DAG planning (`lib/agents/lead.ts` + `lead.prompt.ts`, Zod-validated).
+- Sequential task executor (`lib/dag/executor.ts`; concurrency=1 enforced; sig accepts future >1).
+- RunEvent append-only writer (`lib/events/append.ts` + `redactor.ts` size guard at 4 KiB).
+- In-process pub/sub (`lib/dag/runRegistry.ts`).
+- SSE endpoint + polling fallback (`/api/runs/[runId]/{events,state}`).
+- `/runs/[runId]` run progress UI (`app/runs/[runId]/page.tsx` + `RunStream.tsx` + `DagGraph.tsx` + `AgentReportPane.tsx`).
+- `plan.md` artifact export to `projects/{slug}/runs/{runId}/plan.md` (best-effort).
+- Process-restart sweep (`lib/runtime/recovery.ts`, `ensureRecovered()` called from every Phase 4 route + the page).
+- `Task.result` persisted as `JSON.stringify({ text, bytes })` — readers should `parseJson<{ text?: string }>(t.result, {}).text`.
+- Phase 4 ends a run with the `run.completed` event (success/fail flag + counts + optional failedReason).
+
+**Phase 4 scope deferred (Phase 5)**
+
+- Tool calling from inside agent runs (registry/policy/fsTools still wired but not invoked by `worker.ts`).
+- Final result synthesis: `result.md` / `report.md` / `agent-reports/*.md` — not produced in Phase 4.
+- `result.created` event — reserved for Phase 5 once result synthesis exists.
+- FeedbackBatch / Feedback / TeamRevision v2+ proposal — Phase 5.
+
+**Tomorrow's priority order**
+
+1. Phase 4 manual smoke (must precede merge).
+   - `pnpm --filter web dev`, complete a Q&A, confirm a team, click `Open run →` from the SuccessPanel.
+   - On `/runs/[runId]`: click Start, verify status transitions `ready → planning → running → succeeded`.
+   - Verify SSE delta accumulation in the AgentReportPane (text grows live per task).
+   - Refresh mid-run: confirm RunEvent history replay restores state, then live stream resumes.
+   - Confirm `projects/default/runs/{runId}/plan.md` lands on disk; confirm `result.md`, `report.md`, and `agent-reports/*.md` are NOT created (Phase 5 boundary).
+   - Stretch smoke: kill the dev server during a run, restart, observe `Run.status='failed'` with `failedReason='process_restart'`.
+   - Stretch smoke: temporarily break the provider key in `/settings`, start a new run, observe `task.failed` → `Run.status='failed'`.
+2. Decide merge: PR via the compare link above, or `git checkout main && git merge phase-4-dag-executor`.
+3. Move to Phase 5 plan review (`/ultraplan` style).
+
+**Resume prompt for next session**
+
+```text
+Phase 4 is implemented, committed (`09eada1`), and pushed to
+`origin/phase-4-dag-executor`. Manual smoke is the first thing — do not
+merge or start Phase 5 until smoke passes.
+
+Tasks (in order):
+
+1. Read PLAN.md, IMPLEMENTATION.md, and the latest entries in PHASE_LOG.md
+   (especially the "Session End — 2026-05-07" block under Phase 4).
+2. Walk the manual smoke list under "Tomorrow's priority order" item 1
+   in that section. Capture pass/fail per step.
+3. If smoke passes, ask whether to merge `phase-4-dag-executor` to `main`
+   (PR or fast-forward) and act per the answer.
+4. If smoke fails, propose a minimal Phase 4 correction patch and stop
+   for review before any code changes.
+5. After smoke + merge, switch context to Phase 5 plan review only —
+   do not start Phase 5 implementation without explicit approval.
+
+Do not start Phase 5 code. Do not push without explicit instruction.
+```
 
 ## Phase 5 — Result, Feedback, Revision
 
