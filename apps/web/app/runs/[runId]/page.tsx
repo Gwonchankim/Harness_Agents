@@ -139,7 +139,6 @@ export default async function RunDetailPage({ params }: PageProps) {
       <RunContextHeader
         title={`Run ${run.id.slice(0, 12)}...`}
         prompt={run.prompt}
-        status={run.failedReason ? `${run.status} (${run.failedReason})` : run.status}
         teamName={run.team.name}
       />
 
