@@ -2,9 +2,14 @@ import { notFound } from 'next/navigation';
 
 import { prisma } from '@db/client';
 import { parseJson } from '@lib/db/json';
-
+import { listEnabledModels } from '@lib/models/catalog';
+import {
+  buildFinalResultMarkdown,
+  loadRunResultMarkdown,
+} from '@lib/results/finalResult';
 import { ensureRecovered } from '@lib/runtime/recovery';
 
+import { RunContextHeader } from '@/components/run/RunContextHeader';
 import { RunStream } from '@/components/run/RunStream';
 
 export const runtime = 'nodejs';
@@ -25,9 +30,6 @@ export default async function RunDetailPage({ params }: PageProps) {
       status: true,
       prompt: true,
       failedReason: true,
-      startedAt: true,
-      endedAt: true,
-      createdAt: true,
       team: {
         select: {
           id: true,
@@ -53,60 +55,92 @@ export default async function RunDetailPage({ params }: PageProps) {
 
   if (!run.team) {
     return (
-      <section className="space-y-3 text-sm">
-        <h1 className="text-xl font-medium">Run {run.id}</h1>
-        <p className="opacity-70">No team is attached to this run yet.</p>
+      <section className="space-y-6">
+        <RunContextHeader
+          title={`Run ${run.id.slice(0, 12)}...`}
+          prompt={run.prompt}
+          status={run.status}
+        />
+        <p className="text-sm opacity-70">No team is attached to this run yet.</p>
       </section>
     );
   }
 
-  const tasks = await prisma.task.findMany({
-    where: { runId },
-    orderBy: { createdAt: 'asc' },
-    select: {
-      id: true,
-      taskKey: true,
-      name: true,
-      description: true,
-      status: true,
-      agentId: true,
-      dependencies: true,
-      startedAt: true,
-      completedAt: true,
-      result: true,
-      error: true,
-    },
-  });
-
-  const recentEvents = await prisma.runEvent.findMany({
-    where: { runId },
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    take: 1000,
-    select: {
-      id: true,
-      type: true,
-      taskId: true,
-      agentId: true,
-      payload: true,
-      createdAt: true,
-    },
-  });
+  const [tasks, recentEvents, modelCatalog, storedFinalResult] = await Promise.all([
+    prisma.task.findMany({
+      where: { runId },
+      orderBy: { createdAt: 'asc' },
+      select: {
+        id: true,
+        taskKey: true,
+        name: true,
+        description: true,
+        status: true,
+        agentId: true,
+        dependencies: true,
+        startedAt: true,
+        completedAt: true,
+        result: true,
+        error: true,
+      },
+    }),
+    prisma.runEvent.findMany({
+      where: { runId },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 1000,
+      select: {
+        id: true,
+        type: true,
+        taskId: true,
+        agentId: true,
+        payload: true,
+        createdAt: true,
+      },
+    }),
+    listEnabledModels(),
+    loadRunResultMarkdown(runId),
+  ]);
+  const mappedTasks = tasks.map((t) => ({
+    id: t.id,
+    taskKey: t.taskKey,
+    name: t.name,
+    description: t.description,
+    status: t.status,
+    agentId: t.agentId,
+    dependencies: parseJson<string[]>(t.dependencies, []),
+    startedAt: t.startedAt?.toISOString() ?? null,
+    completedAt: t.completedAt?.toISOString() ?? null,
+    result: t.result
+      ? (parseJson<{ text?: string }>(t.result, {}).text ?? null)
+      : null,
+    error: t.error,
+  }));
+  const agentById = new Map(run.team.agents.map((agent) => [agent.id, agent] as const));
+  const fallbackFinalResult =
+    !storedFinalResult && run.status === 'succeeded'
+      ? buildFinalResultMarkdown({
+          runId: run.id,
+          userPrompt: run.prompt,
+          teamName: run.team.name,
+          tasks: mappedTasks.map((task) => ({
+            taskKey: task.taskKey,
+            title: task.name,
+            agentName: task.agentId
+              ? (agentById.get(task.agentId)?.name ?? 'Unknown agent')
+              : 'Unknown agent',
+            text: task.result ?? '',
+          })),
+        })
+      : null;
 
   return (
     <section className="space-y-6">
-      <header className="space-y-2">
-        <h1 className="text-xl font-medium">Run {run.id.slice(0, 12)}…</h1>
-        <p className="text-xs opacity-70">
-          Team: <span className="font-mono">{run.team.name}</span> · Status:{' '}
-          <span className="font-mono">{run.status}</span>
-          {run.failedReason ? (
-            <span className="ml-1 text-rose-500">({run.failedReason})</span>
-          ) : null}
-        </p>
-        <div className="rounded-md border border-current/15 p-3 text-xs">
-          <span className="opacity-70">Prompt:</span> {run.prompt}
-        </div>
-      </header>
+      <RunContextHeader
+        title={`Run ${run.id.slice(0, 12)}...`}
+        prompt={run.prompt}
+        status={run.failedReason ? `${run.status} (${run.failedReason})` : run.status}
+        teamName={run.team.name}
+      />
 
       <RunStream
         runId={run.id}
@@ -125,21 +159,7 @@ export default async function RunDetailPage({ params }: PageProps) {
               modelId: a.modelId,
             })),
           },
-          tasks: tasks.map((t) => ({
-            id: t.id,
-            taskKey: t.taskKey,
-            name: t.name,
-            description: t.description,
-            status: t.status,
-            agentId: t.agentId,
-            dependencies: parseJson<string[]>(t.dependencies, []),
-            startedAt: t.startedAt?.toISOString() ?? null,
-            completedAt: t.completedAt?.toISOString() ?? null,
-            result: t.result
-              ? (parseJson<{ text?: string }>(t.result, {}).text ?? null)
-              : null,
-            error: t.error,
-          })),
+          tasks: mappedTasks,
           events: recentEvents.map((e) => ({
             id: e.id,
             type: e.type,
@@ -148,6 +168,13 @@ export default async function RunDetailPage({ params }: PageProps) {
             payload: parseJson<unknown>(e.payload, {}),
             createdAt: e.createdAt.toISOString(),
           })),
+          modelCatalog: modelCatalog.map((m) => ({
+            modelId: m.modelId,
+            displayName: m.displayName,
+            provider: m.provider,
+            isDefault: m.isDefault,
+          })),
+          finalResult: storedFinalResult ?? fallbackFinalResult,
         }}
       />
     </section>

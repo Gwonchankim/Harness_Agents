@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { Prisma } from '@prisma/client';
 
 import { prisma } from '@db/client';
 
@@ -60,6 +61,7 @@ export async function POST(
     return NextResponse.json({
       mode: 'existing',
       question: view.currentQuestion,
+      session: view,
     });
   }
 
@@ -115,31 +117,47 @@ export async function POST(
     return mapPoError(err);
   }
 
-  if (targetQuestionId) {
-    await prisma.qaQuestion.update({
-      where: { id: targetQuestionId },
-      data: {
-        prompt: result.prompt,
-        kind: result.kind,
-        options: stringifyJson(result.options),
-        isFinal: result.isFinal,
-        status: 'active',
-        staleAt: null,
-        regeneratedAt: new Date(),
-      },
-    });
-  } else {
-    await prisma.qaQuestion.create({
-      data: {
-        sessionId,
-        order: questionNumber,
-        prompt: result.prompt,
-        kind: result.kind,
-        options: stringifyJson(result.options),
-        isFinal: result.isFinal,
-        status: 'active',
-      },
-    });
+  try {
+    if (targetQuestionId) {
+      await prisma.qaQuestion.update({
+        where: { id: targetQuestionId },
+        data: {
+          prompt: result.prompt,
+          kind: result.kind,
+          options: stringifyJson(result.options),
+          isFinal: result.isFinal,
+          status: 'active',
+          staleAt: null,
+          regeneratedAt: new Date(),
+        },
+      });
+    } else {
+      await prisma.qaQuestion.create({
+        data: {
+          sessionId,
+          order: questionNumber,
+          prompt: result.prompt,
+          kind: result.kind,
+          options: stringifyJson(result.options),
+          isFinal: result.isFinal,
+          status: 'active',
+        },
+      });
+    }
+  } catch (err) {
+    if (
+      !targetQuestionId &&
+      err instanceof Prisma.PrismaClientKnownRequestError &&
+      err.code === 'P2002'
+    ) {
+      const existing = await loadSession(sessionId);
+      return NextResponse.json({
+        mode: 'existing',
+        question: existing?.currentQuestion ?? null,
+        session: existing,
+      });
+    }
+    throw err;
   }
 
   const after = await loadSession(sessionId);
@@ -152,6 +170,7 @@ export async function POST(
       after.questions.find((q) =>
         targetQuestionId ? q.id === targetQuestionId : q.order === questionNumber,
       ) ?? null,
+    session: after,
   });
 }
 

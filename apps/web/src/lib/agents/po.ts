@@ -95,13 +95,33 @@ export async function generateNextQuestion(
     regeneratingOrder: options.regeneratingOrder,
   });
 
-  const payload = await callGenerate<NextQuestionPayload>({
-    provider,
-    modelId: ctx.modelId,
-    schema: nextQuestionSchema,
-    messages,
-    signal: ctx.signal,
-  });
+  let payload: NextQuestionPayload;
+  try {
+    payload = await callGenerate<NextQuestionPayload>({
+      provider,
+      modelId: ctx.modelId,
+      schema: nextQuestionSchema,
+      messages,
+      signal: ctx.signal,
+    });
+  } catch (err) {
+    if (!(err instanceof PoSchemaError)) throw err;
+    payload = await callGenerate<NextQuestionPayload>({
+      provider,
+      modelId: ctx.modelId,
+      schema: nextQuestionSchema,
+      messages: buildNextQuestionMessages({
+        userPrompt: ctx.userPrompt,
+        historyLines: ctx.historyLines,
+        questionNumber,
+        minQuestions: options.minQuestions,
+        maxQuestions: options.maxQuestions,
+        regeneratingOrder: options.regeneratingOrder,
+        strict: true,
+      }),
+      signal: ctx.signal,
+    });
+  }
 
   const choiceOptions: PoQuestionOption[] = payload.choices.map((c) => ({
     kind: 'choice',
@@ -139,13 +159,29 @@ export async function judgeAnswer(
     historyLines: ctx.historyLines,
     question: { prompt: question.prompt, choices },
   });
-  return callGenerate<JudgePayload>({
-    provider,
-    modelId: ctx.modelId,
-    schema: judgeSchema,
-    messages,
-    signal: ctx.signal,
-  });
+  try {
+    return await callGenerate<JudgePayload>({
+      provider,
+      modelId: ctx.modelId,
+      schema: judgeSchema,
+      messages,
+      signal: ctx.signal,
+    });
+  } catch (err) {
+    if (!(err instanceof PoSchemaError)) throw err;
+    return callGenerate<JudgePayload>({
+      provider,
+      modelId: ctx.modelId,
+      schema: judgeSchema,
+      messages: buildJudgeMessages({
+        userPrompt: ctx.userPrompt,
+        historyLines: ctx.historyLines,
+        question: { prompt: question.prompt, choices },
+        strict: true,
+      }),
+      signal: ctx.signal,
+    });
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -164,7 +200,7 @@ async function resolveAndCheckProvider(modelId: string) {
 }
 
 interface CallGenerateArgs<T> {
-  provider: 'openai' | 'anthropic' | 'ollama';
+  provider: 'openai' | 'anthropic' | 'google' | 'ollama';
   modelId: string;
   schema: import('zod').ZodType<T>;
   messages: ReturnType<typeof buildNextQuestionMessages>;

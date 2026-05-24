@@ -30,6 +30,28 @@ test('explicit choiceIndex 1..4 passes through', () => {
   }
 });
 
+test('choiceIndices 1..4 supports multiple substantive selections', () => {
+  const out = coerceSkipToAutoJudge({ choiceIndices: [1, 3, 4] });
+  assert.equal(out.choiceIndex, null);
+  assert.deepEqual(out.choiceIndices, [1, 3, 4]);
+});
+
+test('choiceIndices rejects empty, duplicate, out-of-range, or mixed single input', () => {
+  assert.throws(() => coerceSkipToAutoJudge({ choiceIndices: [] }), InvalidAnswerInputError);
+  assert.throws(
+    () => coerceSkipToAutoJudge({ choiceIndices: [1, 1] }),
+    InvalidAnswerInputError,
+  );
+  assert.throws(
+    () => coerceSkipToAutoJudge({ choiceIndices: [1, 5] }),
+    InvalidAnswerInputError,
+  );
+  assert.throws(
+    () => coerceSkipToAutoJudge({ choiceIndex: 2, choiceIndices: [1, 3] }),
+    InvalidAnswerInputError,
+  );
+});
+
 test('choiceIndex 6 requires non-empty customText', () => {
   assert.throws(() => coerceSkipToAutoJudge({ choiceIndex: 6 }), InvalidAnswerInputError);
   assert.throws(
@@ -49,6 +71,18 @@ test('out-of-range choiceIndex throws', () => {
 
 test('valueForChoice picks the correct option value', () => {
   assert.equal(valueForChoice(optionsForFour, { choiceIndex: 2 }), 'two');
+});
+
+test('valueForChoice returns structured selected values for multiple choices', () => {
+  assert.deepEqual(
+    valueForChoice(optionsForFour, { choiceIndex: null, choiceIndices: [1, 4] }),
+    {
+      selectedValues: [
+        { choiceIndex: 1, label: 'Option 1', value: 'one' },
+        { choiceIndex: 4, label: 'Option 4', value: 'four' },
+      ],
+    },
+  );
 });
 
 test('valueForChoice for auto-judge requires a judged result', () => {

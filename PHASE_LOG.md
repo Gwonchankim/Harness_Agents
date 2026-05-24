@@ -25,9 +25,341 @@ Update this file at the end of each Phase.
 - Phase 3 Compose Team correction applied and re-verified on 2026-05-07 (TeamComposer Provider + Model 2-stage selector with consistent provider/modelId state; in-place success panel replacing the 404-prone `router.push('/runs/[runId]')`; 409 `run_already_has_team` mapped to the same success panel).
 - Phase 4 (DAG Executor and Run Progress) implemented and verified locally on 2026-05-07 on branch `phase-4-dag-executor`. No schema change, no migration, no new dependencies. 89 / 89 tests pass; 18 routes (4 new); typecheck and prisma migrate status clean.
 - Phase 4 commit `09eada1 Add phase 4 DAG executor and run progress` pushed to `origin/phase-4-dag-executor` on 2026-05-07. PR / compare link: <https://github.com/Gwonchankim/Harness_Agents/compare/main...phase-4-dag-executor?expand=1>.
+- Gemini provider/catalog update completed on 2026-05-22: added Google provider plumbing, `GOOGLE_GENERATIVE_AI_API_KEY`, and the requested Gemini 3.1/3.5 + 2.5 catalog entries. Manual Gemini smoke is next.
+- Run/Q&A interaction polish completed on 2026-05-23: multi-select checkboxes now visibly fill on the left, and run start/planning now shows a blur-backed progress popup. Typecheck, 92 / 92 tests, build, and migrate status all pass.
+- Run recovery and navigation polish completed on 2026-05-23: recoverable Lead-provider failures now show an inline team model editor, Home lists existing runs with resume links, and Q&A/Compose/Run pages use a sticky collapsible prompt header. Typecheck, 92 / 92 tests, build, and migrate status all pass.
+- Phase 4 SSE custom-event correction applied on 2026-05-23: live Run progress now listens to named SSE events (`plan.created`, `task.started`, `run.completed`, etc.) instead of only the default `message` event. This fixes Runs that completed in the DB while the UI stayed stuck on the planning overlay.
+- Run progress and Q&A error polish applied on 2026-05-24: the run progress popup now remains visible during `running` agent execution, and generic Q&A HTTP 500 copy now gives refresh/retry guidance instead of showing only `HTTP 500`.
+- Final result output added on 2026-05-24: successful Runs now export `result.md`, emit `result.created`, and show a Final Result panel above per-agent outputs. Older completed Runs get a deterministic fallback final result assembled from existing task outputs.
+- Q&A duplicate next-question race correction applied on 2026-05-24: the client now guards concurrent `/next` requests, and the server treats a duplicate question-order write as idempotent instead of surfacing HTTP 500.
+- Compose already-team revisit correction applied on 2026-05-24: `/runs/new/{sessionId}/compose` now detects `Run.teamId` server-side and renders an already-composed success panel instead of calling recommendations and surfacing `run_already_has_team` as an error.
+- Compose-to-run start shortcut added on 2026-05-24: team-confirmed panels now start the run directly from the compose success screen and then navigate to `/runs/{runId}`, removing the extra Open Run -> Start Run step.
+- Lead planning recovery added on 2026-05-24: Lead DAG planning now retries schema failures once with a strict repair prompt, and persistent `lead_plan_schema_error` / `lead_plan_timeout:*` failures expose the existing team model editor so the user can switch the Lead to a stronger/faster model and reset the Run to `ready`.
+- Run progress live-state reconciliation added on 2026-05-24: Run detail now falls back to polling if SSE stays in `connecting...`, and even healthy SSE sessions periodically reconcile DB state so completed runs move to the Final Result panel without manual refresh.
 - **Open issues carried forward** (still deferred):
-  - Local Ollama compose hit `po_schema_error` once during smoke; Retry succeeded on the next click. Auto-retry / friendlier guidance deferred.
+  - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
   - Phase 4 manual smoke (real Lead plan + agent execution + SSE) not yet exercised — first task on the next session before any merge to `main`.
+
+## Compose Already-Team Revisit Correction (2026-05-24)
+
+Status: Implemented.
+
+### Context
+
+- After the Q&A duplicate `/next` race was corrected, reloading a completed Q&A session with an already confirmed team correctly reached `/runs/new/{sessionId}/compose`.
+- The compose page still mounted `<TeamComposer>`, which immediately called `/api/teams/recommend`.
+- The recommend endpoint intentionally returns `409 run_already_has_team` for a run that already has `teamId`, so the UI showed this as a red error even though the saved state was valid.
+
+### Fix
+
+- `apps/web/app/runs/new/[sessionId]/compose/page.tsx` now fetches `Run.teamId` and `team.name`.
+- If a team is already linked, the server component renders an `AlreadyComposedPanel` with Run ID, Team ID, team name, `Open run ->`, and `Back to home`.
+- In this branch the page does not mount `<TeamComposer>` and does not call the recommendation endpoint, so `run_already_has_team` is no longer displayed as a user-facing error on a successful revisit.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 92 / 92.
+- `apps/web/node_modules/.bin/next.cmd build` — PASS, 19 routes.
+- `apps/web/node_modules/.bin/prisma.cmd migrate status` — PASS, 3 migrations, schema clean.
+- Browser reload smoke — PASS: `http://localhost:3000/runs/new/cmpj5ur08003yshgqwqruzeor/compose` shows "Team already composed" + "Open run" and no longer shows `run_already_has_team` / recommendation error copy.
+
+## Compose-to-Run Start Shortcut (2026-05-24)
+
+Status: Implemented.
+
+### Context
+
+- After team confirmation, the success panel linked to `/runs/{runId}`.
+- The user then had to click `Start run` on the run detail page, creating an unnecessary second step before execution actually began.
+
+### Fix
+
+- Added reusable client component `apps/web/src/components/run/StartRunButton.tsx`.
+- The button calls `POST /api/runs/{runId}/start`; on success it navigates to `/runs/{runId}` where the progress UI takes over.
+- `TeamComposer` success panels now show `Start run ->` instead of `Open run`.
+- The compose revisit success panel also shows `Start run ->` when `Run.status === 'ready'`; for non-ready runs it still shows `Open run ->`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 92 / 92.
+- `apps/web/node_modules/.bin/next.cmd build` — PASS, 19 routes.
+- `apps/web/node_modules/.bin/prisma.cmd migrate status` — PASS, 3 migrations, schema clean.
+- Browser render smoke — PASS: a ready compose revisit page shows `Team already composed` + `Start run` and no longer shows `Open run` or recommendation error copy. The button was not clicked during verification to avoid launching a real provider-backed run.
+
+## Lead Planning Schema/Timeout Recovery (2026-05-24)
+
+Status: Implemented.
+
+### Context
+
+- Manual run start reached `failed(lead_plan_schema_error)` in one run and `failed(lead_plan_timeout:120000ms)` in another.
+- `lead_plan_schema_error` means the Lead model responded during DAG planning, but the response did not match the required structured execution-plan schema.
+- `lead_plan_timeout:*` means the Lead model did not return an execution plan before the provider-specific timeout.
+- The UI showed only the internal failure code and did not offer a recovery path.
+
+### Fix
+
+- `apps/web/src/lib/agents/lead.prompt.ts` now supports strict repair mode for execution-plan generation.
+- `apps/web/src/lib/agents/lead.ts` retries Lead planning once with strict repair instructions after `PoSchemaError`.
+- `apps/web/app/api/runs/[runId]/team-models/route.ts` treats `lead_plan_schema_error` and `lead_plan_timeout:*` as recoverable; saving team models resets the Run to `ready`.
+- `apps/web/src/components/run/RunStream.tsx` includes both failure modes in the recoverable model-failure panel and shows friendly copy explaining whether the Lead planning model produced malformed DAG output or timed out.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 92 / 92.
+- `apps/web/node_modules/.bin/next.cmd build` — PASS, 19 routes.
+- `apps/web/node_modules/.bin/prisma.cmd migrate status` — PASS, 3 migrations, schema clean.
+- Browser smoke — PASS: `/runs/cmotlzjrt0002hnnkfzg57c49` now shows `Lead planning took too long`, model selectors, and `Save models and retry` for `lead_plan_timeout:*`. The same recovery branch covers `lead_plan_schema_error`.
+
+## Run Progress Live-State Reconciliation (2026-05-24)
+
+Status: Implemented.
+
+### Context
+
+- A Run could complete successfully in the DB, but the UI stayed on the planning overlay until manual refresh.
+- In the observed case, the page transport stayed at `connecting...`; because the EventSource neither opened nor errored promptly, the existing polling fallback never started.
+- Refreshing the page loaded the saved `succeeded` state and final result, confirming this was a client live-sync problem rather than an executor failure.
+
+### Fix
+
+- `<RunStream>` now starts polling automatically if EventSource remains unopened for 4 seconds.
+- When SSE does open, `<RunStream>` still performs a 5-second DB reconciliation poll while the run is non-terminal.
+- Reconciliation updates run status, tasks, events, and `finalResult`; terminal status closes the live stream.
+- This keeps the UI moving to the Final Result panel without requiring a manual refresh, even if SSE is buffered or silently stuck by the dev server/browser path.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 92 / 92.
+- `apps/web/node_modules/.bin/next.cmd build` — PASS, 19 routes.
+- `apps/web/node_modules/.bin/prisma.cmd migrate status` — PASS, 3 migrations, schema clean.
+- Browser reload smoke — PASS: `/runs/cmpjamhap007pshgq0hkeo9lk` shows `succeeded` + `Final result` and no longer shows the planning overlay or `connecting...`.
+
+## Provider Update — Gemini (2026-05-22)
+
+Status: Implemented and verified locally.
+
+### Scope
+
+- Added Google Generative AI provider support through `@ai-sdk/google`.
+- Added `GOOGLE_GENERATIVE_AI_API_KEY` to the secret allowlist, Settings UI, and `.env.example`.
+- Added `google` to provider resolution, runtime model building, PO Q&A, Team Composition, Lead planning, Worker task execution, and the two-stage provider/model selectors.
+- Added requested Gemini catalog rows to `models.json`:
+  - `gemini-3.1-flash-lite`
+  - `gemini-3.5-flash`
+  - `gemini-3.1-pro-preview`
+  - `gemini-2.5-flash`
+  - `gemini-2.5-flash-lite`
+- Ran Prisma seed after updating `models.json`; local catalog now reports 14 model rows, with exactly the 5 requested Google models enabled in the Google provider set.
+- Kept schema unchanged. No migration.
+
+### Notes
+
+- Initial install of `@ai-sdk/google` latest produced `LanguageModelV3` types, incompatible with the app's current `ai@4` / `LanguageModelV1` runtime. Resolved by pinning compatible `@ai-sdk/google@^1.2.22`.
+- Team Composition schema-error copy is now provider-neutral: "selected model" instead of "local model".
+- Official reference points:
+  - Google Gemini API models page and linked model detail pages list `gemini-3.1-flash-lite`, `gemini-3.5-flash`, `gemini-3.1-pro-preview`, `gemini-2.5-flash`, and `gemini-2.5-flash-lite`.
+  - AI SDK Google provider page: `@ai-sdk/google`, `createGoogleGenerativeAI`, `GOOGLE_GENERATIVE_AI_API_KEY`, and `google('gemini-2.5-flash')` usage are documented.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 89 / 89.
+- `corepack pnpm --filter web exec next build` — PASS, 18 routes.
+- `corepack pnpm --filter web exec prisma migrate status` — PASS, 3 migrations, schema clean.
+- `corepack pnpm --filter web exec prisma db seed` — PASS, then stale Google catalog row `gemini-2.5-pro` was removed from the local DB.
+
+## Gemini PO Q&A Schema Repair (2026-05-23)
+
+Status: Implemented and verified locally.
+
+### Context
+
+- Manual smoke with `gemini-3.5-flash` reached PO Q&A question 2, then `/api/qa/[sessionId]/next` surfaced `po_schema_error` as "The model returned a malformed response."
+- Team Composition already had a strict repair retry after `PoSchemaError`, but PO Q&A next-question generation and auto-judge did not.
+
+### Fix
+
+- Added strict repair suffixes to PO next-question and auto-judge prompts.
+- `generateNextQuestion()` now retries once with strict repair guidance when the first structured response fails schema validation.
+- `judgeAnswer()` now uses the same one-time strict repair retry.
+- Tightened `nextQuestionSchema.kind` to `z.literal('single')` to match the actual MVP UI contract.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 89 / 89.
+- `corepack pnpm --filter web exec next build` — PASS, 18 routes.
+
+## PO Q&A Loading UX and Reload Removal (2026-05-23)
+
+Status: Implemented and verified locally.
+
+### Context
+
+- During manual Gemini Q&A smoke, next-question generation felt slow and the page looked static while waiting.
+- The client also called `location.reload()` after `/api/qa/[sessionId]/next`, adding avoidable page reload time after the model had already produced the question.
+
+### Fix
+
+- `/api/qa/[sessionId]/next` now returns the full updated `SessionView` alongside the generated/regenerated question.
+- `<QaFlow>` consumes that returned session directly, removing the full page reload on normal next-question and regenerate paths.
+- Added a loading overlay while Q&A interactions are locked:
+  - background content blurs and fades,
+  - overlay shows the current operation,
+  - step chips show answer-save / model-call / structured-validation progress,
+  - Google and Ollama get provider-specific detail copy.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 89 / 89.
+- `corepack pnpm --filter web exec next build` — PASS, 18 routes.
+
+## PO Q&A Multi-Select Answers (2026-05-23)
+
+Status: Implemented and verified locally.
+
+### Scope
+
+- Q&A substantive options 1..4 can now be selected in any combination and submitted together.
+- AI auto-judge (option 5) and custom answer (option 6) remain single-use alternatives.
+- No schema migration: multi-select answers store `QaAnswer.choiceIndex = null` and persist the selected option set inside the existing JSON `value` column as `{ selectedValues: [...] }`.
+- Timeline and PO history formatting now render multi-select answers as `(multiple) 1. ...; 3. ...`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 92 / 92.
+- `corepack pnpm --filter web exec next build` — PASS, 18 routes.
+
+## Run/Q&A Interaction Polish (2026-05-23)
+
+Status: Implemented and verified locally.
+
+### Context
+
+- Manual Q&A smoke showed that selected multi-choice rows were shaded, but the left-side selection control itself did not visibly change.
+- On `/runs/[runId]`, clicking `Start run` moved the Run to `planning`, but the screen still looked static while the Lead generated the DAG. This made it unclear whether the app was working or stuck.
+
+### Fix
+
+- `<QuestionCard>` now renders a filled left checkbox and a highlighted option number for selected multi-choice answers. The right-side marker was removed so the selection signal sits where users look first.
+- `<RunStream>` now shows a blur-backed progress popup while the run is starting or in `planning`:
+  - background content fades and blurs,
+  - popup explains whether the app is starting the worker or the Lead is building the DAG,
+  - step list shows `Start run -> Lead plans DAG -> Validate tasks -> Begin execution`,
+  - the popup disappears automatically once `plan.created` moves the UI into `running`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` -- PASS.
+- `corepack pnpm --filter web test` -- PASS, 92 / 92.
+- `corepack pnpm --filter web exec next build` -- PASS, 18 routes.
+- `corepack pnpm --filter web exec prisma migrate status` -- PASS, 3 migrations, schema clean.
+
+## Run Recovery and Navigation Polish (2026-05-23)
+
+Status: Implemented and verified locally.
+
+### Context
+
+- Manual Phase 4 smoke hit `failed(lead_plan_provider_unavailable:anthropic)` because the confirmed Team still used Anthropic models, but Anthropic was not configured.
+- The app did not yet provide a way to see previous work items, their current stage, or a direct resume target.
+- Long project pages lacked a sticky context area showing the run topic and original prompt while scrolling.
+
+### Fix
+
+- Added `PATCH /api/runs/[runId]/team-models`:
+  - validates every selected model against enabled `ModelCatalog` rows,
+  - updates the linked Team's Agent `modelId` and provider,
+  - resets recoverable Lead-provider failures back to `Run.status='ready'` so the user can start again.
+- `<RunStream>` now shows an inline "Team model configuration needed" panel for recoverable Lead provider/auth/unknown-provider failures.
+  - All Team agents can be switched with Provider + Model selectors.
+  - Saving model changes returns the Run to the ready state when the failure is recoverable.
+- Home (`/`) now lists recent project runs with:
+  - current stage (`Q&A`, `Team composition`, `Ready to start`, `Team working`, `Needs attention`, etc.),
+  - team name when attached,
+  - original prompt,
+  - direct Continue link to the right page.
+- Added a reusable sticky `<RunContextHeader>` to Q&A, Team Compose, and Run Detail pages:
+  - expanded state shows Run title, status/team, and prompt,
+  - collapsed state keeps a compact title/status while scrolling.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` -- PASS.
+- `corepack pnpm --filter web test` -- PASS, 92 / 92.
+- `corepack pnpm --filter web exec next build` -- PASS, 19 routes.
+- `corepack pnpm --filter web exec prisma migrate status` -- PASS, 3 migrations, schema clean.
+- Browser smoke:
+  - `/runs/cmphu0wvf001dq1pef9tjag80` shows the recoverable provider failure panel with editable Team model selectors.
+  - `/` shows existing project runs and resume links.
+
+## Phase 4 SSE Custom-Event Correction (2026-05-23)
+
+Status: Implemented and verified locally.
+
+### Context
+
+- Manual smoke on `/runs/cmpi0epmr003pq1pe8m4ewamx` appeared stuck for hours at "Lead is building the DAG".
+- Direct DB inspection showed the Run had actually completed in about 20 seconds with `Run.status='succeeded'`, 4 `Task.status='done'` rows, and a `run.completed` event.
+- Root cause: `/api/runs/[runId]/events` emits named SSE frames (`event: plan.created`, `event: run.completed`, etc.), but `<RunStream>` only subscribed to the default `EventSource.onmessage`. Native EventSource does not deliver named events to `onmessage`.
+
+### Fix
+
+- `<RunStream>` now registers listeners for every Phase 4 event type:
+  - `run.started`
+  - `plan.created`
+  - `task.started`
+  - `agent.output.delta`
+  - `agent.output.completed`
+  - `task.completed`
+  - `task.failed`
+  - `run.completed`
+- All named events share the same parser/reducer path as default `message` events, preserving `lastEventId` for reconnect/polling continuity.
+- No schema change, migration, dependency change, or API contract change.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` -- PASS.
+- `corepack pnpm --filter web test` -- PASS, 92 / 92.
+- `corepack pnpm --filter web exec next build` -- PASS, 19 routes.
+- `corepack pnpm --filter web exec prisma migrate status` -- PASS, 3 migrations, schema clean.
+- Browser smoke: reloaded `/runs/cmpi0epmr003pq1pe8m4ewamx`; the planning overlay is gone and the page shows `Status: succeeded`, 4 completed DAG tasks, and closed transport.
+
+## Final Result Output (2026-05-24)
+
+Status: Implemented locally; verification below.
+
+### Context
+
+- The Run detail page showed each Agent/Task output, but did not provide a single final deliverable for the user.
+- Some plans include a final compilation task, but this was not guaranteed by the platform contract and no `result.md` artifact was written.
+
+### Fix
+
+- Added `apps/web/src/lib/results/finalResult.ts`:
+  - builds a deterministic final Markdown document from completed task outputs,
+  - prefers an explicit final/compile/synthesis/documentation task when present,
+  - still includes all supporting Agent outputs below the final section,
+  - exports `projects/{projectSlug}/runs/{runId}/result.md` atomically.
+- The executor now writes `result.md`, creates an `Artifact(kind='result_md')`, and emits `result.created` before `run.completed` on successful Runs.
+- `/runs/[runId]` and the polling state endpoint load the final result content.
+- `<RunStream>` renders a `Final result` panel above the DAG/Agent output area and fetches the final result when `result.created` / `run.completed` arrives.
+- Older completed Runs without `result.md` get a deterministic fallback generated from their saved `Task.result` rows, so existing smoke-test Runs still show a final result after reload.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` -- PASS.
+- `corepack pnpm --filter web test` -- PASS, 92 / 92.
+- `corepack pnpm --filter web exec next build` -- PASS, 19 routes.
+- `corepack pnpm --filter web exec prisma migrate status` -- PASS, 3 migrations, schema clean.
+- Browser smoke: reloaded `/runs/cmpj58uce0002shgqjv43dytj`; the page shows `FINAL RESULT`, `Supporting Agent Outputs`, and `succeeded`.
 
 ## Phase Workflow
 
@@ -1414,4 +1746,3 @@ Defer until after the two items above. Cost of the failure is low (one user clic
 - pendingOperation enum 패턴은 QaFlow에만 적용되어 있음. TeamComposer는 단순 boolean submitting으로 유지해도 OK.
 - Compose 페이지(`apps/web/app/runs/new/[sessionId]/compose/page.tsx`)는 server-component로 DB mutation 금지 원칙 유지.
 ```
-

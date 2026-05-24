@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 interface ModelDefinition {
   modelId: string;
   displayName: string;
-  provider: 'openai' | 'anthropic' | 'ollama' | string;
+  provider: 'openai' | 'anthropic' | 'google' | 'ollama' | string;
   endpointType?: string;
   costTier?: 'free' | 'low' | 'standard' | 'premium' | string;
   speedTier?: 'fast' | 'standard' | 'slow' | string;

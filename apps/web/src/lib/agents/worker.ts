@@ -21,7 +21,7 @@ export interface AgentTaskCtx {
     role: string;
     systemPrompt: string;
     modelId: string;
-    provider: 'openai' | 'anthropic' | 'ollama';
+    provider: 'openai' | 'anthropic' | 'google' | 'ollama';
   };
   task: {
     taskKey: string;

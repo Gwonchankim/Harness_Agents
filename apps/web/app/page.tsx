@@ -1,16 +1,32 @@
 import Link from 'next/link';
 
-export default function HomePage() {
+import { prisma } from '@db/client';
+
+export const dynamic = 'force-dynamic';
+
+export default async function HomePage() {
+  const runs = await prisma.run.findMany({
+    orderBy: { updatedAt: 'desc' },
+    take: 20,
+    select: {
+      id: true,
+      prompt: true,
+      status: true,
+      failedReason: true,
+      updatedAt: true,
+      project: { select: { name: true } },
+      team: { select: { name: true } },
+      qaSession: { select: { id: true, status: true } },
+    },
+  });
+
   return (
     <section className="space-y-8">
       <div className="space-y-3">
         <h1 className="text-3xl font-semibold tracking-tight">Harness Agents</h1>
         <p className="max-w-2xl opacity-70">
-          Local-first multi-agent workspace. Phase 4 wires the DAG executor: once a Team is
-          confirmed, the Lead Agent generates an ExecutionPlan, the executor runs each task
-          sequentially, and a per-run page streams events over SSE (with polling fallback).
-          Tasks, RunEvents, and a <code>plan.md</code> artifact are persisted; final
-          <code className="mx-1">result.md</code> / <code>report.md</code> synthesis lands in Phase 5.
+          Local-first multi-agent workspace. Start a new run, or resume one of the
+          existing project runs below.
         </p>
       </div>
 
@@ -25,23 +41,105 @@ export default function HomePage() {
             href="/settings"
             className="mt-3 inline-block text-sm font-medium underline underline-offset-4"
           >
-            Open settings →
+            Open settings
           </Link>
         </li>
         <li className="rounded-lg border border-current/15 p-5">
           <h2 className="text-base font-medium">Start a new run</h2>
           <p className="mt-1 text-sm opacity-70">
-            Enter a prompt, pick a PO model, and walk through 5–6 dynamic
-            clarification cards. Auto-judge or custom answers supported.
+            Enter a prompt, pick a PO model, and walk through dynamic clarification cards.
           </p>
           <Link
             href="/runs/new"
             className="mt-3 inline-block text-sm font-medium underline underline-offset-4"
           >
-            New run →
+            New run
           </Link>
         </li>
       </ul>
+
+      <section className="space-y-3">
+        <div className="flex items-end justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-medium">Existing project runs</h2>
+            <p className="text-sm opacity-65">
+              See where each run stopped and jump back into the right step.
+            </p>
+          </div>
+          <span className="text-xs opacity-55">{runs.length} shown</span>
+        </div>
+
+        {runs.length === 0 ? (
+          <p className="rounded-lg border border-current/15 p-5 text-sm opacity-70">
+            No runs yet. Start a new run to create the first project record.
+          </p>
+        ) : (
+          <ul className="space-y-3">
+            {runs.map((run) => {
+              const resume = getResumeTarget(run);
+              return (
+                <li
+                  key={run.id}
+                  className="rounded-lg border border-current/15 p-4 text-sm"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 space-y-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="font-medium">{run.project.name}</h3>
+                        <span className="rounded-full border border-current/15 px-2 py-0.5 text-xs opacity-70">
+                          {resume.label}
+                        </span>
+                        {run.team ? (
+                          <span className="text-xs opacity-60">Team: {run.team.name}</span>
+                        ) : null}
+                      </div>
+                      <p className="line-clamp-2 opacity-75">{run.prompt}</p>
+                      {run.failedReason ? (
+                        <p className="text-xs text-rose-600">Needs attention: {run.failedReason}</p>
+                      ) : null}
+                      <p className="text-xs opacity-50">
+                        Updated {run.updatedAt.toLocaleString()}
+                      </p>
+                    </div>
+                    <Link
+                      href={resume.href as never}
+                      className="shrink-0 rounded-md border border-current/30 px-3 py-1 text-xs font-medium hover:bg-current/5"
+                    >
+                      Continue
+                    </Link>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </section>
     </section>
   );
+}
+
+function getResumeTarget(run: {
+  id: string;
+  status: string;
+  qaSession: { id: string; status: string } | null;
+  team: { name: string } | null;
+}) {
+  if (run.status === 'po_qa' || run.status === 'pending') {
+    if (run.qaSession?.status === 'completed') {
+      return {
+        label: 'Team composition',
+        href: `/runs/new/${run.qaSession.id}/compose`,
+      };
+    }
+    if (run.qaSession) {
+      return { label: 'Q&A', href: `/runs/new/${run.qaSession.id}` };
+    }
+    return { label: 'Prompt intake', href: '/runs/new' };
+  }
+  if (run.status === 'ready') return { label: 'Ready to start', href: `/runs/${run.id}` };
+  if (run.status === 'planning') return { label: 'Planning', href: `/runs/${run.id}` };
+  if (run.status === 'running') return { label: 'Team working', href: `/runs/${run.id}` };
+  if (run.status === 'succeeded') return { label: 'Execution complete', href: `/runs/${run.id}` };
+  if (run.status === 'failed') return { label: 'Needs attention', href: `/runs/${run.id}` };
+  return { label: run.status, href: `/runs/${run.id}` };
 }

@@ -43,7 +43,7 @@ export interface ResolvedAgent extends ProposedAgent {
   /** Server-resolved final modelId from the catalog. */
   modelId: string;
   /** Server-resolved provider for that modelId. */
-  provider: 'openai' | 'anthropic' | 'ollama';
+  provider: 'openai' | 'anthropic' | 'google' | 'ollama';
 }
 
 export interface ResolvedTeamProposal {
@@ -57,18 +57,33 @@ export interface ResolvedTeamProposal {
 /**
  * Generate a team proposal from the user's prompt + Q&A history. Throws
  * Phase-2-style errors that the route maps to HTTP statuses.
+ *
+ * On PoSchemaError we automatically retry once with a stricter repair prompt —
+ * local Gemma-family models sometimes drop schema constraints on the first try,
+ * and a single repair attempt recovers most of those cases without surfacing
+ * the error to the user.
  */
 export async function proposeNewTeam(ctx: TeamCtx): Promise<TeamProposalPayload> {
   const provider = await resolveAndCheckProvider(ctx.modelId);
-  const messages = buildTeamProposalMessages({
+  const firstMessages = buildTeamProposalMessages({
     userPrompt: ctx.userPrompt,
     historyLines: ctx.historyLines,
   });
-  return callGenerate(provider, ctx.modelId, messages, ctx.signal);
+  try {
+    return await callGenerate(provider, ctx.modelId, firstMessages, ctx.signal);
+  } catch (err) {
+    if (!(err instanceof PoSchemaError)) throw err;
+    const repairMessages = buildTeamProposalMessages({
+      userPrompt: ctx.userPrompt,
+      historyLines: ctx.historyLines,
+      strict: true,
+    });
+    return callGenerate(provider, ctx.modelId, repairMessages, ctx.signal);
+  }
 }
 
 async function callGenerate(
-  provider: 'openai' | 'anthropic' | 'ollama',
+  provider: 'openai' | 'anthropic' | 'google' | 'ollama',
   modelId: string,
   messages: ReturnType<typeof buildTeamProposalMessages>,
   signal?: AbortSignal,
@@ -114,7 +129,7 @@ async function callGenerate(
 
 async function resolveAndCheckProvider(
   modelId: string,
-): Promise<'openai' | 'anthropic' | 'ollama'> {
+): Promise<'openai' | 'anthropic' | 'google' | 'ollama'> {
   const row = await getEnabledModelOrThrow(modelId);
   const provider = resolveProviderName(row.provider);
   if (!provider) throw new UnknownProviderError(row.provider);

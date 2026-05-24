@@ -196,6 +196,11 @@ function formatAnswerForHistory(a: QaAnswerView): string {
   if (a.choiceIndex === 6 && a.customText) {
     return `(custom) ${a.customText}`;
   }
+  if (isMultiSelectedValue(a.value)) {
+    return `(multiple) ${a.value.selectedValues
+      .map((v) => `${v.choiceIndex}. ${v.label}`)
+      .join('; ')}`;
+  }
   if (
     a.isAutoJudged &&
     typeof a.value === 'object' &&
@@ -206,4 +211,14 @@ function formatAnswerForHistory(a: QaAnswerView): string {
     return `(auto-judge) ${JSON.stringify(v.chosenValue ?? null)} — ${v.rationale ?? ''}`;
   }
   return JSON.stringify(a.value ?? null);
+}
+
+function isMultiSelectedValue(
+  value: unknown,
+): value is { selectedValues: Array<{ choiceIndex: number; label: string; value: unknown }> } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    Array.isArray((value as { selectedValues?: unknown }).selectedValues)
+  );
 }

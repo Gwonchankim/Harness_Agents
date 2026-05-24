@@ -12,6 +12,7 @@ interface Props {
 const FIELD_LABELS: Record<string, string> = {
   OPENAI_API_KEY: 'OpenAI API key',
   ANTHROPIC_API_KEY: 'Anthropic API key',
+  GOOGLE_GENERATIVE_AI_API_KEY: 'Google Gemini API key',
   OLLAMA_BASE_URL: 'Ollama base URL',
 };
 

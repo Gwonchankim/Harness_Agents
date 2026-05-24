@@ -7,6 +7,7 @@ import { NextResponse } from 'next/server';
 import { prisma } from '@db/client';
 import { parseJson } from '@lib/db/json';
 
+import { loadRunResultMarkdown } from '@lib/results/finalResult';
 import { ensureRecovered } from '@lib/runtime/recovery';
 
 export const runtime = 'nodejs';
@@ -37,16 +38,18 @@ export async function GET(
     return NextResponse.json({ error: 'run_not_found' }, { status: 404 });
   }
 
-  const events = await prisma.runEvent.findMany({
-    where: { runId, ...(since ? { id: { gt: since } } : {}) },
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    take: 1000,
-  });
-
-  const tasks = await prisma.task.findMany({
-    where: { runId },
-    orderBy: { createdAt: 'asc' },
-  });
+  const [events, tasks, finalResult] = await Promise.all([
+    prisma.runEvent.findMany({
+      where: { runId, ...(since ? { id: { gt: since } } : {}) },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      take: 1000,
+    }),
+    prisma.task.findMany({
+      where: { runId },
+      orderBy: { createdAt: 'asc' },
+    }),
+    loadRunResultMarkdown(runId),
+  ]);
 
   const lastEventId = events.length > 0 ? events[events.length - 1]!.id : since;
 
@@ -79,6 +82,7 @@ export async function GET(
       payload: parseJson<unknown>(e.payload, {}),
       createdAt: e.createdAt.toISOString(),
     })),
+    finalResult,
     nextSince: lastEventId,
   });
 }

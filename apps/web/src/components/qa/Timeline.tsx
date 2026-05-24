@@ -80,10 +80,25 @@ function formatAnswerSummary(a: NonNullable<QaQuestionView['answer']>): string {
   if (a.choiceIndex === 6 && a.customText) {
     return `(custom) ${a.customText}`;
   }
+  if (isMultiSelectedValue(a.value)) {
+    return `(multiple) ${a.value.selectedValues
+      .map((v) => `${v.choiceIndex}. ${v.label}`)
+      .join('; ')}`;
+  }
   if (isJudgedValue(a.value)) {
     return `chose ${JSON.stringify(a.value.chosenValue)}`;
   }
   return JSON.stringify(a.value ?? null);
+}
+
+function isMultiSelectedValue(
+  v: unknown,
+): v is { selectedValues: Array<{ choiceIndex: number; label: string; value: unknown }> } {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    Array.isArray((v as { selectedValues?: unknown }).selectedValues)
+  );
 }
 
 function isJudgedValue(v: unknown): v is { chosenValue: unknown; rationale: string } {

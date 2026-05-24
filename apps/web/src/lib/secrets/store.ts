@@ -21,7 +21,12 @@ import { registerKnownSecret } from '@lib/secrets/redactor';
 
 const SERVICE = 'harness-agents';
 
-const ALLOWED_NAMES = ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OLLAMA_BASE_URL'] as const;
+const ALLOWED_NAMES = [
+  'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
+  'GOOGLE_GENERATIVE_AI_API_KEY',
+  'OLLAMA_BASE_URL',
+] as const;
 export type SecretName = (typeof ALLOWED_NAMES)[number];
 
 export function isAllowedSecretName(name: string): name is SecretName {
@@ -31,6 +36,7 @@ export function isAllowedSecretName(name: string): name is SecretName {
 export const SECRET_NAME_TO_PROVIDER: Record<SecretName, string> = {
   OPENAI_API_KEY: 'openai',
   ANTHROPIC_API_KEY: 'anthropic',
+  GOOGLE_GENERATIVE_AI_API_KEY: 'google',
   OLLAMA_BASE_URL: 'ollama',
 };
 

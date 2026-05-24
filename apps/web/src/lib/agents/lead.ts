@@ -53,7 +53,21 @@ export async function proposeExecutionPlan(ctx: LeadCtx): Promise<ExecutionPlanP
     agents: ctx.agents,
   });
 
-  const payload = await callLead(provider, ctx.modelId, messages, ctx.signal);
+  let payload: ExecutionPlanPayload;
+  try {
+    payload = await callLead(provider, ctx.modelId, messages, ctx.signal);
+  } catch (err) {
+    if (!(err instanceof PoSchemaError)) throw err;
+    const repairMessages = buildLeadPlanMessages({
+      userPrompt: ctx.userPrompt,
+      historyLines: ctx.historyLines,
+      teamName: ctx.teamName,
+      teamDescription: ctx.teamDescription ?? null,
+      agents: ctx.agents,
+      strict: true,
+    });
+    payload = await callLead(provider, ctx.modelId, repairMessages, ctx.signal);
+  }
   validatePlanShape(payload, ctx.agents);
   return payload;
 }
@@ -109,7 +123,7 @@ function validatePlanShape(
 }
 
 async function callLead(
-  provider: 'openai' | 'anthropic' | 'ollama',
+  provider: 'openai' | 'anthropic' | 'google' | 'ollama',
   modelId: string,
   messages: ReturnType<typeof buildLeadPlanMessages>,
   signal?: AbortSignal,
@@ -155,7 +169,7 @@ async function callLead(
 
 async function resolveProvider(
   modelId: string,
-): Promise<'openai' | 'anthropic' | 'ollama'> {
+): Promise<'openai' | 'anthropic' | 'google' | 'ollama'> {
   const row = await getEnabledModelOrThrow(modelId);
   const provider = resolveProviderName(row.provider);
   if (!provider) throw new UnknownProviderError(row.provider);

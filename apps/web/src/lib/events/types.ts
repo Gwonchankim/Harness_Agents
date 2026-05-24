@@ -10,6 +10,7 @@ export type Phase4EventType =
   | 'agent.output.completed'
   | 'task.completed'
   | 'task.failed'
+  | 'result.created'
   | 'run.completed';
 
 export interface RunStartedPayload {
@@ -51,6 +52,12 @@ export interface TaskFailedPayload {
   status: 'failed';
   error: string;
   durationMs: number;
+}
+
+export interface ResultCreatedPayload {
+  artifactId: string;
+  path: string;
+  bytes: number;
 }
 
 export interface RunCompletedPayload {

@@ -20,6 +20,10 @@ import { topoSort } from './topo';
 import { appendEvent } from '@lib/events/append';
 import { buildHistoryLines, loadSession } from '@lib/qa/sessionState';
 import {
+  buildFinalResultMarkdown,
+  exportRunResultMd,
+} from '@lib/results/finalResult';
+import {
   resolveProviderName,
   UnknownProviderError,
 } from '@lib/models/catalog';
@@ -397,6 +401,22 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
     }
   }
 
+  await exportFinalResult({
+    projectSlug: run.project.slug,
+    runId,
+    userPrompt: run.prompt,
+    teamName: run.team.name,
+    tasks: order.map((t) => {
+      const agent = run.team!.agents.find((a) => a.id === t.agentId);
+      return {
+        taskKey: t.taskKey,
+        title: t.title,
+        agentName: agent?.name ?? 'Unknown agent',
+        text: taskResults.get(t.taskKey) ?? '',
+      };
+    }),
+  });
+
   await prisma.run.update({
     where: { id: runId },
     data: { status: 'succeeded', endedAt: new Date() },
@@ -406,6 +426,51 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
     type: 'run.completed',
     payload: { success: true, succeededTasks, failedTasks: 0 },
   });
+}
+
+async function exportFinalResult(input: {
+  projectSlug: string;
+  runId: string;
+  userPrompt: string;
+  teamName: string;
+  tasks: Array<{ taskKey: string; title: string; agentName: string; text: string }>;
+}): Promise<void> {
+  try {
+    const markdown = buildFinalResultMarkdown({
+      runId: input.runId,
+      userPrompt: input.userPrompt,
+      teamName: input.teamName,
+      tasks: input.tasks,
+    });
+    const wrote = await exportRunResultMd({
+      projectSlug: input.projectSlug,
+      runId: input.runId,
+      markdown,
+    });
+    const artifact = await prisma.artifact.create({
+      data: {
+        runId: input.runId,
+        kind: 'result_md',
+        path: wrote.path,
+        mimeType: wrote.mimeType,
+        bytes: wrote.bytes,
+        sha256: wrote.sha256,
+      },
+      select: { id: true },
+    });
+    await appendEvent({
+      runId: input.runId,
+      type: 'result.created',
+      artifactId: artifact.id,
+      payload: {
+        artifactId: artifact.id,
+        path: wrote.path,
+        bytes: wrote.bytes,
+      },
+    });
+  } catch (err) {
+    console.error('result.md export failed:', err);
+  }
 }
 
 async function markRunFailed(runId: string, reason: string): Promise<void> {
