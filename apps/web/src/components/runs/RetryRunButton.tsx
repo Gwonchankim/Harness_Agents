@@ -9,6 +9,9 @@ interface Props {
   failedReason: string | null;
   /** Called after an in-place reset so the parent can move the run to `ready`. */
   onReset?: () => void;
+  /** Idle button label. Defaults to "Retry run"; set to "Retry from scratch"
+   *  when Resume is the primary action so the clone path reads as secondary. */
+  actionLabel?: string;
 }
 
 interface RetryResponse {
@@ -18,7 +21,7 @@ interface RetryResponse {
   error?: string;
 }
 
-export function RetryRunButton({ runId, failedReason, onReset }: Props) {
+export function RetryRunButton({ runId, failedReason, onReset, actionLabel }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<string | null>(null);
@@ -68,7 +71,7 @@ export function RetryRunButton({ runId, failedReason, onReset }: Props) {
           disabled={busy}
           className="rounded-md border border-current/30 px-4 py-2 text-sm font-medium hover:bg-current/5 disabled:opacity-40"
         >
-          {busy ? 'Retrying…' : 'Retry run'}
+          {busy ? 'Retrying...' : (actionLabel ?? 'Retry run')}
         </button>
         {done ? <span className="text-xs text-emerald-700">{done}</span> : null}
         {error ? <span className="text-xs text-rose-600">{error}</span> : null}

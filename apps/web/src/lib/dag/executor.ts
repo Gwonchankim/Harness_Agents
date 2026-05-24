@@ -16,6 +16,8 @@ import {
   type ExecutionPlanPayload,
 } from '@lib/agents/lead';
 import { runAgentTask } from '@lib/agents/worker';
+import { classifyGenerateError } from '@lib/agents/providerError';
+import { nextBackoff } from '@lib/runs/backoffPolicy';
 import { topoSort } from './topo';
 import { appendEvent } from '@lib/events/append';
 import { buildHistoryLines, loadSession } from '@lib/qa/sessionState';
@@ -67,6 +69,180 @@ export async function executeRun(runId: string, opts: ExecuteOptions = {}): Prom
     await executeInner(runId, opts.signal);
   } finally {
     inFlight.delete(runId);
+  }
+}
+
+/**
+ * Phase 8 partial resume. The caller (lib/runs/resume.ts via the /resume route)
+ * has already reset the failed/cancelled tasks to `pending` and set the run to
+ * `running`. This skips planning entirely: it loads the existing ExecutionPlan +
+ * Task rows, seeds the in-memory results from the tasks that are already `done`
+ * (so their outputs are reused as upstream context), then runs only the remaining
+ * non-done tasks in topo order. Cancellable via the same signal as executeRun.
+ */
+export async function executeResume(runId: string, opts: ExecuteOptions = {}): Promise<void> {
+  const concurrency = opts.concurrency ?? 1;
+  if (concurrency !== 1) {
+    throw new Error('concurrency_not_implemented');
+  }
+  if (inFlight.has(runId)) return;
+  inFlight.add(runId);
+  try {
+    await resumeInner(runId, opts.signal);
+  } finally {
+    inFlight.delete(runId);
+  }
+}
+
+async function resumeInner(runId: string, signal?: AbortSignal): Promise<void> {
+  const run = await prisma.run.findUnique({
+    where: { id: runId },
+    select: {
+      id: true,
+      prompt: true,
+      status: true,
+      teamId: true,
+      project: { select: { slug: true } },
+      team: {
+        select: {
+          id: true,
+          name: true,
+          agents: {
+            select: {
+              id: true,
+              name: true,
+              role: true,
+              isLead: true,
+              systemPrompt: true,
+              modelId: true,
+              provider: true,
+              createdAt: true,
+            },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      },
+      plan: { select: { id: true } },
+    },
+  });
+
+  if (!run) return;
+  // resume.ts set status to 'running' before firing; bail if something else moved it.
+  if (run.status !== 'running') return;
+  if (!run.team) {
+    await markRunFailed(runId, 'run_has_no_team');
+    return;
+  }
+  if (!run.plan) {
+    await markRunFailed(runId, 'resume_no_plan');
+    return;
+  }
+
+  const taskRows = await prisma.task.findMany({
+    where: { runId, planId: run.plan.id },
+    orderBy: { createdAt: 'asc' },
+  });
+  const taskNodes = taskRows.map((t) => ({
+    id: t.id,
+    taskKey: t.taskKey,
+    agentId: t.agentId,
+    title: t.name,
+    description: t.description,
+    expectedOutput: t.expectedOutput ?? '',
+    dependencies: parseJson<string[]>(t.dependencies, []),
+  }));
+
+  let order: typeof taskNodes;
+  try {
+    order = topoSort(taskNodes);
+  } catch (err) {
+    const reason = `dag_invalid:${err instanceof Error ? err.name : 'unknown'}`;
+    await markRunFailed(runId, reason);
+    await appendEvent({
+      runId,
+      type: 'run.completed',
+      payload: { success: false, succeededTasks: 0, failedTasks: 0, failedReason: reason },
+    });
+    return;
+  }
+
+  // Seed results from tasks already done so they are reused as upstream context.
+  const taskResults = new Map<string, string>();
+  const doneKeys = new Set<string>();
+  for (const row of taskRows) {
+    if (row.status === 'done') {
+      doneKeys.add(row.taskKey);
+      if (row.result) {
+        const { text } = parseJson<{ text?: string }>(row.result, {});
+        if (typeof text === 'string') taskResults.set(row.taskKey, text);
+      }
+    }
+  }
+
+  let succeededTasks = doneKeys.size;
+
+  for (const t of order) {
+    if (signal?.aborted) return; // cancel.ts owns the cancelled terminal state
+    if (doneKeys.has(t.taskKey)) continue; // already done; result already seeded
+    const outcome = await runOneTask({
+      runId,
+      userPrompt: run.prompt,
+      agents: run.team.agents,
+      taskNodes,
+      taskResults,
+      task: t,
+      signal,
+    });
+    if (outcome === 'aborted') return;
+    if (outcome === 'failed') {
+      await markRunFailed(runId, `task_failed:${t.taskKey}`);
+      await appendEvent({
+        runId,
+        type: 'run.completed',
+        payload: {
+          success: false,
+          succeededTasks,
+          failedTasks: 1,
+          failedReason: `task_failed:${t.taskKey}`,
+        },
+      });
+      return;
+    }
+    succeededTasks += 1;
+  }
+
+  if (signal?.aborted) return;
+
+  await exportFinalResult({
+    projectSlug: run.project.slug,
+    runId,
+    userPrompt: run.prompt,
+    teamName: run.team.name,
+    tasks: order.map((t) => {
+      const agent = run.team!.agents.find((a) => a.id === t.agentId);
+      return {
+        taskKey: t.taskKey,
+        title: t.title,
+        agentName: agent?.name ?? 'Unknown agent',
+        text: taskResults.get(t.taskKey) ?? '',
+      };
+    }),
+  });
+
+  await prisma.run.update({
+    where: { id: runId },
+    data: { status: 'succeeded', endedAt: new Date() },
+  });
+  await appendEvent({
+    runId,
+    type: 'run.completed',
+    payload: { success: true, succeededTasks, failedTasks: 0 },
+  });
+
+  try {
+    await exportRunReports(runId);
+  } catch (err) {
+    console.error('run reports export failed:', err);
   }
 }
 
@@ -255,147 +431,20 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
 
   const taskResults = new Map<string, string>();
   let succeededTasks = 0;
-  let failedTasks = 0;
 
   for (const t of order) {
     if (signal?.aborted) return; // stop before starting another task on cancel
-    const ag = run.team.agents.find((a) => a.id === t.agentId);
-    if (!ag) {
-      const reason = `agent_not_found:${t.taskKey}`;
-      await markTaskFailed(runId, t.id, null, t.taskKey, reason, 0);
-      failedTasks += 1;
-      await markRunFailed(runId, `task_failed:${t.taskKey}`);
-      await appendEvent({
-        runId,
-        type: 'run.completed',
-        payload: {
-          success: false,
-          succeededTasks,
-          failedTasks,
-          failedReason: `task_failed:${t.taskKey}`,
-        },
-      });
-      return;
-    }
-    const provider = resolveProviderName(ag.provider);
-    if (!provider) {
-      const reason = `unknown_provider:${ag.provider}`;
-      await markTaskFailed(runId, t.id, ag.id, t.taskKey, reason, 0);
-      failedTasks += 1;
-      await markRunFailed(runId, `task_failed:${t.taskKey}`);
-      await appendEvent({
-        runId,
-        type: 'run.completed',
-        payload: {
-          success: false,
-          succeededTasks,
-          failedTasks,
-          failedReason: `task_failed:${t.taskKey}`,
-        },
-      });
-      return;
-    }
-
-    const taskStartedAt = Date.now();
-    await prisma.task.update({
-      where: { id: t.id },
-      data: { status: 'running', startedAt: new Date() },
-    });
-    await appendEvent({
+    const outcome = await runOneTask({
       runId,
-      taskId: t.id,
-      agentId: ag.id,
-      type: 'task.started',
-      payload: { taskKey: t.taskKey, agentName: ag.name, title: t.title },
+      userPrompt: run.prompt,
+      agents: run.team.agents,
+      taskNodes,
+      taskResults,
+      task: t,
+      signal,
     });
-
-    const team = run.team;
-    const upstream = t.dependencies
-      .map((dep) => {
-        const text = taskResults.get(dep);
-        if (text == null) return null;
-        const upTask = taskNodes.find((n) => n.taskKey === dep);
-        const upAgent = upTask
-          ? team.agents.find((a) => a.id === upTask.agentId)
-          : null;
-        return { taskKey: dep, agentName: upAgent?.name ?? 'unknown', text };
-      })
-      .filter((u): u is { taskKey: string; agentName: string; text: string } => u != null);
-
-    try {
-      const { text, bytes } = await runAgentTask({
-        agent: {
-          id: ag.id,
-          name: ag.name,
-          role: ag.role,
-          systemPrompt: ag.systemPrompt,
-          modelId: ag.modelId,
-          provider,
-        },
-        task: {
-          taskKey: t.taskKey,
-          title: t.title,
-          description: t.description,
-          expectedOutput: t.expectedOutput,
-          dependencies: t.dependencies,
-        },
-        upstreamResults: upstream,
-        userPrompt: run.prompt,
-        signal,
-        onDelta: async (chunk) => {
-          await appendEvent({
-            runId,
-            taskId: t.id,
-            agentId: ag.id,
-            type: 'agent.output.delta',
-            payload: { taskKey: t.taskKey, text: chunk },
-          });
-        },
-      });
-
-      taskResults.set(t.taskKey, text);
-      const durationMs = Date.now() - taskStartedAt;
-      await prisma.task.update({
-        where: { id: t.id },
-        data: {
-          status: 'done',
-          result: stringifyJson({ text, bytes }),
-          completedAt: new Date(),
-        },
-      });
-      await appendEvent({
-        runId,
-        taskId: t.id,
-        agentId: ag.id,
-        type: 'agent.output.completed',
-        payload: { taskKey: t.taskKey, bytes },
-      });
-      await appendEvent({
-        runId,
-        taskId: t.id,
-        agentId: ag.id,
-        type: 'task.completed',
-        payload: { taskKey: t.taskKey, status: 'done', durationMs },
-      });
-      succeededTasks += 1;
-    } catch (err) {
-      if (signal?.aborted) return; // cancel.ts owns the cancelled terminal state
-      const durationMs = Date.now() - taskStartedAt;
-      const errorMsg = redactString(
-        err instanceof Error ? err.message : String(err),
-      ).slice(0, 240);
-      await prisma.task.update({
-        where: { id: t.id },
-        data: { status: 'failed', error: errorMsg, completedAt: new Date() },
-      });
-      await appendEvent({
-        runId,
-        taskId: t.id,
-        agentId: ag.id,
-        type: 'task.failed',
-        payload: { taskKey: t.taskKey, status: 'failed', error: errorMsg, durationMs },
-      });
-      failedTasks += 1;
+    if (outcome === 'aborted') return; // cancel.ts owns the cancelled terminal state
+    if (outcome === 'failed') {
       await markRunFailed(runId, `task_failed:${t.taskKey}`);
       await appendEvent({
         runId,
@@ -403,12 +452,13 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
         payload: {
           success: false,
           succeededTasks,
-          failedTasks,
+          failedTasks: 1,
           failedReason: `task_failed:${t.taskKey}`,
         },
       });
       return;
     }
+    succeededTasks += 1;
   }
 
   // A cancel that landed after the last task finished must not flip to succeeded.
@@ -519,6 +569,201 @@ async function markTaskFailed(
     agentId,
     type: 'task.failed',
     payload: { taskKey, status: 'failed', error: reason, durationMs },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Single-task execution. Shared by the initial run loop (executeInner) and the
+// Phase 8 resume loop (executeResume). Owns the task's own DB writes + events;
+// the caller owns run-level success/failure transitions. Returns:
+//   'done'    — task succeeded, result text recorded in taskResults
+//   'failed'  — task.failed already written; caller marks the run failed
+//   'aborted' — signal fired mid-task; cancel.ts owns the terminal state
+// ---------------------------------------------------------------------------
+
+interface ExecTaskNode {
+  id: string;
+  taskKey: string;
+  agentId: string | null;
+  title: string;
+  description: string;
+  expectedOutput: string;
+  dependencies: string[];
+}
+
+interface ExecAgent {
+  id: string;
+  name: string;
+  role: string;
+  isLead: boolean;
+  systemPrompt: string;
+  modelId: string;
+  provider: string;
+}
+
+interface RunOneTaskCtx {
+  runId: string;
+  userPrompt: string;
+  agents: readonly ExecAgent[];
+  taskNodes: readonly ExecTaskNode[];
+  taskResults: Map<string, string>;
+  task: ExecTaskNode;
+  signal?: AbortSignal;
+}
+
+type RunOneTaskOutcome = 'done' | 'failed' | 'aborted';
+
+async function runOneTask(ctx: RunOneTaskCtx): Promise<RunOneTaskOutcome> {
+  const { runId, task: t, taskNodes, taskResults, agents, signal } = ctx;
+
+  const ag = agents.find((a) => a.id === t.agentId);
+  if (!ag) {
+    await markTaskFailed(runId, t.id, null, t.taskKey, `agent_not_found:${t.taskKey}`, 0);
+    return 'failed';
+  }
+  const provider = resolveProviderName(ag.provider);
+  if (!provider) {
+    await markTaskFailed(runId, t.id, ag.id, t.taskKey, `unknown_provider:${ag.provider}`, 0);
+    return 'failed';
+  }
+
+  // Dependencies + their seeded results don't change between retry attempts.
+  const upstream = t.dependencies
+    .map((dep) => {
+      const text = taskResults.get(dep);
+      if (text == null) return null;
+      const upTask = taskNodes.find((n) => n.taskKey === dep);
+      const upAgent = upTask ? agents.find((a) => a.id === upTask.agentId) : null;
+      return { taskKey: dep, agentName: upAgent?.name ?? 'unknown', text };
+    })
+    .filter((u): u is { taskKey: string; agentName: string; text: string } => u != null);
+
+  // Phase 8 backoff: retry transient provider failures (rate_limit / timeout) in
+  // place. Each attempt re-emits `task.started` so the UI output buffer resets and
+  // the retried stream doesn't concatenate onto the previous attempt.
+  let attempts = 0;
+  while (true) {
+    const taskStartedAt = Date.now();
+    await prisma.task.update({
+      where: { id: t.id },
+      data: { status: 'running', startedAt: new Date() },
+    });
+    await appendEvent({
+      runId,
+      taskId: t.id,
+      agentId: ag.id,
+      type: 'task.started',
+      payload: { taskKey: t.taskKey, agentName: ag.name, title: t.title },
+    });
+
+    try {
+      const { text, bytes } = await runAgentTask({
+        agent: {
+          id: ag.id,
+          name: ag.name,
+          role: ag.role,
+          systemPrompt: ag.systemPrompt,
+          modelId: ag.modelId,
+          provider,
+        },
+        task: {
+          taskKey: t.taskKey,
+          title: t.title,
+          description: t.description,
+          expectedOutput: t.expectedOutput,
+          dependencies: t.dependencies,
+        },
+        upstreamResults: upstream,
+        userPrompt: ctx.userPrompt,
+        signal,
+        onDelta: async (chunk) => {
+          await appendEvent({
+            runId,
+            taskId: t.id,
+            agentId: ag.id,
+            type: 'agent.output.delta',
+            payload: { taskKey: t.taskKey, text: chunk },
+          });
+        },
+      });
+
+      taskResults.set(t.taskKey, text);
+      const durationMs = Date.now() - taskStartedAt;
+      await prisma.task.update({
+        where: { id: t.id },
+        data: { status: 'done', result: stringifyJson({ text, bytes }), completedAt: new Date() },
+      });
+      await appendEvent({
+        runId,
+        taskId: t.id,
+        agentId: ag.id,
+        type: 'agent.output.completed',
+        payload: { taskKey: t.taskKey, bytes },
+      });
+      await appendEvent({
+        runId,
+        taskId: t.id,
+        agentId: ag.id,
+        type: 'task.completed',
+        payload: { taskKey: t.taskKey, status: 'done', durationMs },
+      });
+      return 'done';
+    } catch (err) {
+      if (signal?.aborted) return 'aborted'; // cancel.ts owns the cancelled terminal state
+      attempts += 1;
+      const kind = classifyGenerateError(err).kind;
+      const decision = nextBackoff(kind, attempts);
+      if (decision.retry) {
+        await appendEvent({
+          runId,
+          taskId: t.id,
+          agentId: ag.id,
+          type: 'task.retry.attempt',
+          payload: { taskKey: t.taskKey, attempt: attempts, kind, delayMs: decision.delayMs },
+        });
+        const abortedDuringWait = await abortableDelay(decision.delayMs, signal);
+        if (abortedDuringWait) return 'aborted';
+        continue;
+      }
+      const durationMs = Date.now() - taskStartedAt;
+      const errorMsg = redactString(err instanceof Error ? err.message : String(err)).slice(0, 240);
+      await prisma.task.update({
+        where: { id: t.id },
+        data: { status: 'failed', error: errorMsg, completedAt: new Date() },
+      });
+      await appendEvent({
+        runId,
+        taskId: t.id,
+        agentId: ag.id,
+        type: 'task.failed',
+        payload: { taskKey: t.taskKey, status: 'failed', error: errorMsg, durationMs },
+      });
+      return 'failed';
+    }
+  }
+}
+
+/** Sleep `ms`, resolving early to `true` if the signal aborts during the wait. */
+function abortableDelay(ms: number, signal?: AbortSignal): Promise<boolean> {
+  if (ms <= 0) return Promise.resolve(signal?.aborted ?? false);
+  return new Promise<boolean>((resolve) => {
+    if (signal?.aborted) {
+      resolve(true);
+      return;
+    }
+    const onAbort = () => {
+      cleanup();
+      resolve(true);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 

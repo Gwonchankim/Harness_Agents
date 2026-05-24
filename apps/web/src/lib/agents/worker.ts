@@ -5,7 +5,7 @@
 // RunEvent + emits on the bus).
 
 import { streamText } from '@lib/agents/runtime';
-import { resolvePoGenerateTimeoutMs } from '@lib/qa/timeout';
+import { GenerateTimeoutError, resolvePoGenerateTimeoutMs } from '@lib/qa/timeout';
 
 import { raiseProviderError } from './po';
 
@@ -75,6 +75,18 @@ export async function runAgentTask(ctx: AgentTaskCtx): Promise<AgentTaskResult> 
     }
     return { text: completeText, bytes: Buffer.byteLength(completeText, 'utf8') };
   } catch (err) {
+    if (composite.timedOut() && !(ctx.signal?.aborted ?? false)) {
+      raiseProviderError(
+        new GenerateTimeoutError(timeoutMs, {
+          provider: ctx.agent.provider,
+          modelId: ctx.agent.modelId,
+        }),
+        {
+          provider: ctx.agent.provider,
+          modelId: ctx.agent.modelId,
+        },
+      );
+    }
     raiseProviderError(err, {
       provider: ctx.agent.provider,
       modelId: ctx.agent.modelId,
@@ -114,14 +126,19 @@ function buildAgentMessages(ctx: AgentTaskCtx) {
 
 interface CompositeAbort {
   signal: AbortSignal;
+  timedOut: () => boolean;
   clear: () => void;
 }
 
 function compositeAbort(parent: AbortSignal | undefined, timeoutMs: number): CompositeAbort {
   const controller = new AbortController();
   const cleanups: Array<() => void> = [];
+  let didTimeout = false;
   if (timeoutMs > 0) {
-    const timer = setTimeout(() => controller.abort(new Error('agent_task_timeout')), timeoutMs);
+    const timer = setTimeout(() => {
+      didTimeout = true;
+      controller.abort(new Error('agent_task_timeout'));
+    }, timeoutMs);
     cleanups.push(() => clearTimeout(timer));
   }
   if (parent) {
@@ -135,6 +152,7 @@ function compositeAbort(parent: AbortSignal | undefined, timeoutMs: number): Com
   }
   return {
     signal: controller.signal,
+    timedOut: () => didTimeout,
     clear: () => {
       for (const fn of cleanups) fn();
     },

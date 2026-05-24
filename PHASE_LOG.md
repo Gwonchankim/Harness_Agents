@@ -40,9 +40,48 @@ Update this file at the end of each Phase.
 - Phase 6 (Reuse / History / Resume / Retry UX) implemented and verified locally on 2026-05-24 on branch `phase-6-reuse-history-ux`. No schema change, no migration, no new dependencies. typecheck clean; 116 / 116 tests; `next build` 26 routes (4 new: `/runs`, `/teams`, `/teams/[teamId]`, `/api/runs/[runId]/retry`); prisma migrate status clean. Plan in `PHASE6_PLAN.md`. Not yet committed/pushed (user handles git).
 - Phase 6 browser smoke + Team Library search correction completed on 2026-05-24. `/runs`, `/teams`, `/teams/[teamId]`, feedback revisit, and failed-run recovery panels were checked in the in-app browser. Team search now filters non-matching queries instead of only re-ranking all teams. typecheck clean; 119 / 119 tests; `next build` 26 routes; prisma migrate status clean.
 - Phase 7 (Run Control & Provider Stability) implemented and verified locally on 2026-05-25 on branch `phase-7-run-control`. Adds run cancel (`POST /api/runs/[runId]/cancel`), a unified provider-error classifier shared by po/lead/team/leadRevise/worker (adds rate_limit + model_not_found), and richer long-run progress UX (elapsed time, last-event age, transport, in-overlay Cancel). No schema migration, no new dependency. typecheck clean; 134 / 134 tests; `next build` 27 routes (1 new: `/api/runs/[runId]/cancel`); prisma migrate status clean. Plan in `PHASE7_PLAN.md`. Browser smoke checked cancel guards, model-recovery reset, Start -> planning overlay, Cancel -> `failed(user_cancelled)` + `run.cancelled`, and Retry -> `ready`; state-refresh polish keeps the server header and client panel in sync after Start/Cancel/Retry/model-reset. Provider-specific auth/timeout/rate-limit panels are still worth spot-checking when convenient. Not yet committed/pushed (user handles git).
+- Phase 8 (Partial Resume & Provider Backoff) implemented and verified locally on 2026-05-25 on branch `phase-8-partial-resume`. Adds in-place partial resume of a failed/cancelled run that has a plan (`POST /api/runs/[runId]/resume`): failed/cancelled tasks reset to `pending`, done tasks reused as upstream context; plus failed/cancelled task-level retry (`POST /api/runs/[runId]/tasks/[taskId]/retry`), per-task transient backoff (rate_limit 2x / timeout 1x, abortable, `task.retry.attempt` events), and streamed-output replay/resume double-count protection (`task.started` resets the buffer). Review corrections added a done-task reuse guard (`no_reusable_done_tasks`), worker timeout classification for timeout backoff, and event typing/listening for `task.retry.attempt`. No schema migration, no new dependency. typecheck clean; 151 / 151 tests; `next build` 29 routes (2 new); prisma migrate status clean. Plan in `PHASE8_PLAN.md`. Provider-backed resume still needs a real mid-DAG failure smoke when convenient.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
   - Phase 4 manual smoke (real Lead plan + agent execution + SSE) not yet exercised — first task on the next session before any merge to `main`.
+
+## Phase 8 - Partial Resume & Provider Backoff (2026-05-25)
+
+Status: Implemented and verified locally. Branch `phase-8-partial-resume`. Plan: `PHASE8_PLAN.md`.
+
+### Approved Scope
+
+1. Partial resume of a failed/cancelled run that has a plan: reset failed/cancelled tasks to `pending`, keep done tasks, seed done task results as upstream context, and execute the remaining non-done tasks in the same run/plan.
+2. Task-level retry is restricted to failed/cancelled tasks. Force-rerunning a done task with transitive downstream invalidation is deferred to Phase 9.
+3. Provider backoff retries only transient task failures: rate_limit twice and timeout once. Auth, schema, model_not_found, provider_unavailable, unknown, and abort fail immediately.
+4. The executor per-task body is extracted into shared `runOneTask`, used by both initial execution and `executeResume`.
+5. Resume is the primary CTA for a resumable failed run; "Retry from scratch" remains the clone/reset fallback.
+
+### Implementation Notes
+
+- New pure modules: `src/lib/dag/downstream.ts`, `src/lib/runs/resumePlan.ts`, and `src/lib/runs/backoffPolicy.ts`, with tests.
+- New runtime module: `src/lib/runs/resume.ts`, which validates resumability, resets failed/cancelled tasks to pending, marks the run running, appends `run.resumed`, and starts `executeResume`.
+- New API routes: `POST /api/runs/[runId]/resume` and `POST /api/runs/[runId]/tasks/[taskId]/retry`.
+- New UI: `src/components/run/ResumeRunButton.tsx`; `RunStream` renders Resume as the primary action when a failed run can reuse done task output.
+- `RunStream` now resets a task output buffer on `task.started` and rebuilds seeded output from event replay consistently, preventing old and new attempts from being appended together.
+- Review corrections before commit: `computeResumePlan` now requires at least one done task to reuse (`no_reusable_done_tasks`), worker timeout aborts are classified as `GenerateTimeoutError` so timeout backoff can run, and `task.retry.attempt` is included in event typing and the SSE listener set.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` - PASS.
+- `corepack pnpm --filter web test` - PASS, 151 / 151.
+- `next build` - PASS, 29 routes (2 new).
+- `prisma migrate status` - PASS, 3 migrations, schema clean.
+- `git diff --check` - PASS after the final documentation cleanup.
+- Live guard smoke without provider cost: `/resume` 404/409 guards, task-retry 404 guard, and Phase 6/7 screen no-regression checks. Provider-backed resume still needs an interactive run with a real mid-DAG failure.
+
+### Deferred
+
+- Force-rerun a done task with transitive downstream invalidation.
+- `Retry-After`-aware backoff and jitter.
+- Concurrency greater than 1.
+- Auto-resume on boot.
+- Per-task attempt persistence/analytics.
 
 ## Phase 6 — Reuse / History / Resume / Retry UX (2026-05-24)
 

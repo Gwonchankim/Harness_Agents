@@ -10,8 +10,11 @@ export type Phase4EventType =
   | 'agent.output.completed'
   | 'task.completed'
   | 'task.failed'
+  | 'task.retry.attempt'
   | 'result.created'
-  | 'run.completed';
+  | 'run.completed'
+  | 'run.cancelled'
+  | 'run.resumed';
 
 export interface RunStartedPayload {
   teamId: string;
@@ -54,6 +57,13 @@ export interface TaskFailedPayload {
   durationMs: number;
 }
 
+export interface TaskRetryAttemptPayload {
+  taskKey: string;
+  attempt: number;
+  kind: string;
+  delayMs: number;
+}
+
 export interface ResultCreatedPayload {
   artifactId: string;
   path: string;
@@ -65,6 +75,18 @@ export interface RunCompletedPayload {
   succeededTasks: number;
   failedTasks: number;
   failedReason?: string;
+}
+
+export interface RunCancelledPayload {
+  failedReason: 'user_cancelled';
+  cancelledTasks: number;
+}
+
+export interface RunResumedPayload {
+  mode: 'auto' | 'fromTask';
+  resumedTasks: number;
+  doneReused: number;
+  fromTaskKey?: string;
 }
 
 // ---------------------------------------------------------------------------
