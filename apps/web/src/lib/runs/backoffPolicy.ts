@@ -51,12 +51,22 @@ function configFor(kind: GenerateErrorKind): KindConfig {
 /**
  * Whether a task that just failed with `kind` should be retried, and the delay.
  * `attemptsSoFar` = failed attempts already made (1 after the first failure).
+ *
+ * `opts.retryAfterMs` (a provider-suggested `Retry-After`) takes precedence over
+ * the exponential schedule when present, still capped at `maxDelayMs`. Stays
+ * deterministic (no jitter) — the executor applies jitter at sleep time.
  */
-export function nextBackoff(kind: GenerateErrorKind, attemptsSoFar: number): BackoffDecision {
+export function nextBackoff(
+  kind: GenerateErrorKind,
+  attemptsSoFar: number,
+  opts?: { retryAfterMs?: number },
+): BackoffDecision {
   const cfg = configFor(kind);
   if (attemptsSoFar < 1 || attemptsSoFar > cfg.max) {
     return { retry: false, delayMs: 0 };
   }
-  const delayMs = Math.min(cfg.baseMs * 2 ** (attemptsSoFar - 1), cfg.maxDelayMs);
-  return { retry: true, delayMs };
+  const exponential = cfg.baseMs * 2 ** (attemptsSoFar - 1);
+  const suggested =
+    opts?.retryAfterMs != null && opts.retryAfterMs > 0 ? opts.retryAfterMs : exponential;
+  return { retry: true, delayMs: Math.min(suggested, cfg.maxDelayMs) };
 }

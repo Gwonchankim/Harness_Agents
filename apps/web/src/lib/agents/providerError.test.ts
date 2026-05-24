@@ -5,10 +5,31 @@ import { GenerateAbortedError, GenerateTimeoutError } from '@lib/qa/timeout';
 import {
   classifyGenerateError,
   extractProviderErrorStatus,
+  extractRetryAfterMs,
   looksLikeModelNotFound,
   looksLikeRateLimit,
   looksLikeSchemaError,
 } from './providerError';
+
+test('extractRetryAfterMs: delta-seconds from responseHeaders/headers, else undefined', () => {
+  assert.equal(extractRetryAfterMs({ responseHeaders: { 'retry-after': '30' } }), 30_000);
+  assert.equal(extractRetryAfterMs({ headers: { 'Retry-After': '5' } }), 5000);
+  assert.equal(extractRetryAfterMs({ responseHeaders: { 'retry-after': 'Wed, 21 Oct 2026 07:28:00 GMT' } }), undefined);
+  assert.equal(extractRetryAfterMs({ responseHeaders: { 'retry-after': '30s' } }), undefined);
+  assert.equal(extractRetryAfterMs({ responseHeaders: {} }), undefined);
+  assert.equal(extractRetryAfterMs(new Error('nope')), undefined);
+  assert.equal(extractRetryAfterMs(null), undefined);
+});
+
+test('classifyGenerateError: rate_limit carries retryAfterMs when header present', () => {
+  const withHeader = { statusCode: 429, responseHeaders: { 'retry-after': '12' } };
+  const c = classifyGenerateError(withHeader);
+  assert.equal(c.kind, 'rate_limit');
+  assert.equal(c.retryAfterMs, 12_000);
+  const withoutHeader = classifyGenerateError({ statusCode: 429 });
+  assert.equal(withoutHeader.kind, 'rate_limit');
+  assert.equal(withoutHeader.retryAfterMs, undefined);
+});
 
 test('classifyGenerateError: control-flow errors pass through', () => {
   assert.equal(classifyGenerateError(new GenerateAbortedError()).kind, 'abort');

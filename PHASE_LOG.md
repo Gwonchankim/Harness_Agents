@@ -41,8 +41,56 @@ Update this file at the end of each Phase.
 - Phase 6 browser smoke + Team Library search correction completed on 2026-05-24. `/runs`, `/teams`, `/teams/[teamId]`, feedback revisit, and failed-run recovery panels were checked in the in-app browser. Team search now filters non-matching queries instead of only re-ranking all teams. typecheck clean; 119 / 119 tests; `next build` 26 routes; prisma migrate status clean.
 - Phase 7 (Run Control & Provider Stability) implemented and verified locally on 2026-05-25 on branch `phase-7-run-control`. Adds run cancel (`POST /api/runs/[runId]/cancel`), a unified provider-error classifier shared by po/lead/team/leadRevise/worker (adds rate_limit + model_not_found), and richer long-run progress UX (elapsed time, last-event age, transport, in-overlay Cancel). No schema migration, no new dependency. typecheck clean; 134 / 134 tests; `next build` 27 routes (1 new: `/api/runs/[runId]/cancel`); prisma migrate status clean. Plan in `PHASE7_PLAN.md`. Browser smoke checked cancel guards, model-recovery reset, Start -> planning overlay, Cancel -> `failed(user_cancelled)` + `run.cancelled`, and Retry -> `ready`; state-refresh polish keeps the server header and client panel in sync after Start/Cancel/Retry/model-reset. Provider-specific auth/timeout/rate-limit panels are still worth spot-checking when convenient. Not yet committed/pushed (user handles git).
 - Phase 8 (Partial Resume & Provider Backoff) implemented and verified locally on 2026-05-25 on branch `phase-8-partial-resume`. Adds in-place partial resume of a failed/cancelled run that has a plan (`POST /api/runs/[runId]/resume`): failed/cancelled tasks reset to `pending`, done tasks reused as upstream context; plus failed/cancelled task-level retry (`POST /api/runs/[runId]/tasks/[taskId]/retry`), per-task transient backoff (rate_limit 2x / timeout 1x, abortable, `task.retry.attempt` events), and streamed-output replay/resume double-count protection (`task.started` resets the buffer). Review corrections added a done-task reuse guard (`no_reusable_done_tasks`), worker timeout classification for timeout backoff, and event typing/listening for `task.retry.attempt`. No schema migration, no new dependency. typecheck clean; 151 / 151 tests; `next build` 29 routes (2 new); prisma migrate status clean. Plan in `PHASE8_PLAN.md`. Provider-backed partial-resume smoke completed on 2026-05-25 with a synthetic failed run using Gemini: one done seed task was reused, one failed task re-ran to `done`, `run.resumed`/`result.created`/`run.completed` events were appended, and `result.md`/`report.md`/`agent_report.md` artifacts were exported.
+- Phase 9 (Done-Task Re-run & Backoff Hardening) implemented and verified locally on 2026-05-25 on branch `phase-9-done-rerun`. Adds re-running a done/failed/cancelled task on a terminal run (failed | succeeded) via the generalized `rerunFromTask` strategy — resetKeys = target + transitive downstream + all failed/cancelled — wiring `lib/dag/downstream.ts`; `task.reset` RunEvent audit before overwrite; Retry-After-aware backoff (`RateLimitError.retryAfterMs`, `nextBackoff` honors it) with executor-applied ±20% jitter. `/tasks/[taskId]/retry` now accepts done targets (failed/cancelled behavior unchanged). No schema migration, no new dependency. typecheck clean; 161 / 161 tests; `next build` 29 routes; prisma migrate status clean. Plan in `PHASE9_PLAN.md`. Provider-backed smoke completed on 2026-05-25 with Gemini: re-running a leaf done task reset only that task (`resetTasks:1, doneReused:1`), the upstream seed task's `startedAt` was unchanged (reused), the leaf re-ran to `done`, and `task.reset`/`run.resumed`/`task.started`/`result.created`/`run.completed` fired with `result.md` regenerated. Not yet committed/pushed (user handles git).
+- Phase 9 follow-up browser smoke correction completed on 2026-05-25: a middle done task (`gamification-ux`) was re-run on real run `cmpjndyul004s406jb61ui9nm`, resetting itself plus downstream `final-synthesis` while reusing unrelated upstream done tasks. A terminal re-run UI issue was fixed by restarting the live SSE/polling loop after `run.resumed`, clearing stale output/final-result state, and verifying the page returned to `succeeded` with the Final Result panel visible.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
+
+## Phase 9 - Done-Task Re-run & Backoff Hardening (2026-05-25)
+
+Status: Implemented and verified locally. Branch `phase-9-done-rerun`. Plan: `PHASE9_PLAN.md`.
+
+### Approved scope (decisions)
+
+1. Unified task-level action `rerunFromTask`: resetKeys = target + transitive downstream + all failed/cancelled. Failed/cancelled targets behave exactly like the Phase 8 retry (downstream is still pending); done targets force a recompute of the target and its dependents, reusing upstream done results.
+2. Previous results overwritten; a `task.reset` RunEvent (previous status/bytes, reason, resetByTaskKey) is appended before the overwrite. Prior full output stays reconstructable from append-only `agent.output.delta` events — no schema added.
+3. Backoff: best-effort `Retry-After` extraction (`RateLimitError.retryAfterMs`); `nextBackoff` honors it (capped), staying deterministic; the executor applies ±20% jitter at sleep time. Falls back to exponential when absent. auth/schema/model_not_found/provider_unavailable still fail immediately.
+4. `rerunFromTask` allowed only on terminal runs (failed | succeeded); Phase 8 `auto`/`fromTask` stay failed-only.
+5. Deferred to Phase 10+: concurrency > 1, auto-resume on boot, a TaskAttempt persistence table.
+
+### New files
+
+- `src/components/run/RerunTaskButton.tsx` — per-task "Re-run from here" (2-step confirm + downstream count).
+
+### Modified files
+
+- `src/lib/runs/resumePlan.ts` — new `rerunFromTask` mode + required `dependencies` on `ResumeTaskInput`; wires `transitiveDownstream`; `doneCount` now means reused-done (not-reset). (+ test cases.)
+- `src/lib/runs/resume.ts` — selects task `dependencies`/`result`; terminal-status gate for rerun; emits `task.reset` audit per reset task; `task_not_rerunnable` reason.
+- `src/lib/agents/providerError.ts` — `extractRetryAfterMs` + `GenerateErrorClassification.retryAfterMs` on rate_limit. (+ test.)
+- `src/lib/agents/po.ts` — `RateLimitError.retryAfterMs`; `raiseProviderError` passes it through.
+- `src/lib/runs/backoffPolicy.ts` — `nextBackoff(kind, attempt, { retryAfterMs })`. (+ test.)
+- `src/lib/dag/executor.ts` — `runOneTask` passes `retryAfterMs` to `nextBackoff` and jitters the sleep (`withJitter`); logs `retryAfterMs` on `task.retry.attempt`. (`resumeInner` unchanged — it already runs whatever is pending.)
+- `app/api/runs/[runId]/tasks/[taskId]/retry/route.ts` — delegates to `rerunFromTask` (done targets allowed).
+- `src/components/run/DagGraph.tsx` — per-task `RerunTaskButton` on terminal runs (done/failed/cancelled tasks) with client-side downstream preview.
+- `src/components/run/RunStream.tsx` — `task.reset` reducer (pending + buffer clear) + `RUN_EVENT_TYPES`; passes runId/runStatus/onRerun to `DagGraph`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 161 / 161 (resumePlan rerun + backoff retryAfter + providerError retryAfter cases added).
+- `next build` — PASS, 29 routes (no new route; `/tasks/[taskId]/retry` generalized).
+- `prisma migrate status` — PASS, 3 migrations, schema clean (no migration added).
+- Live guard smoke: `/tasks/<bad>/retry` → 404 `task_not_found`; succeeded run page → 200.
+- Provider-backed smoke (Gemini, run `cmpk0uedb…`): leaf done-task re-run → `{mode:rerunFromTask, resetTasks:1, doneReused:1}`; upstream seed `startedAt` unchanged (reused); leaf re-ran to `done`; events `task.reset` → `run.resumed` → `task.started` → `agent.output.*` → `task.completed` → `result.created` → `run.completed(success)`; run back to `succeeded`.
+
+Additional smoke correction:
+
+- Provider-backed browser smoke (Gemini, run `cmpjndyul004s406jb61ui9nm`): middle done-task re-run (`gamification-ux`) reset that task plus downstream `final-synthesis`; unrelated upstream done tasks kept their original `startedAt` values; events `task.reset` -> `run.resumed` -> `task.started` -> `agent.output.*` -> `task.completed` -> `result.created` -> `run.completed(success)`; browser stayed live via SSE/polling and moved back to `succeeded` with the Final Result panel visible.
+- UI correction from that smoke: terminal run re-runs now bump the RunStream live-loop nonce, clear stale streamed output/final result on `run.resumed`, and replay `task.reset` consistently during initial state reconstruction.
+
+### Deferred (Phase 10+)
+
+- Concurrency > 1, auto-resume on boot, TaskAttempt persistence/analytics, HTTP-date `Retry-After` parsing.
 
 ## Phase 8 - Partial Resume & Provider Backoff (2026-05-25)
 

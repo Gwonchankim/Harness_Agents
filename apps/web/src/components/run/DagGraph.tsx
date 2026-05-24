@@ -1,5 +1,9 @@
 'use client';
 
+import { transitiveDownstream } from '@lib/dag/downstream';
+
+import { RerunTaskButton } from './RerunTaskButton';
+
 interface Agent {
   id: string;
   name: string;
@@ -27,8 +31,26 @@ const STATUS_STYLE: Record<string, string> = {
   cancelled: 'border-current/25 bg-current/5 opacity-60',
 };
 
-export function DagGraph({ tasks, agents }: { tasks: Task[]; agents: Agent[] }) {
+export function DagGraph({
+  tasks,
+  agents,
+  runId,
+  runStatus,
+  onRerun,
+}: {
+  tasks: Task[];
+  agents: Agent[];
+  runId?: string;
+  runStatus?: string;
+  onRerun?: () => void;
+}) {
   const agentById = new Map(agents.map((a) => [a.id, a] as const));
+  // Phase 9: re-run a task from a terminal run (failed | succeeded). Only terminal
+  // tasks (done/failed/cancelled) can be re-run.
+  const terminalRun = runStatus === 'failed' || runStatus === 'succeeded';
+  const canRerun = (status: string) =>
+    status === 'done' || status === 'failed' || status === 'cancelled';
+  const showRerun = Boolean(runId && onRerun && terminalRun);
   if (tasks.length === 0) {
     return (
       <section>
@@ -76,6 +98,16 @@ export function DagGraph({ tasks, agents }: { tasks: Task[]; agents: Agent[] }) 
                   </>
                 ) : null}
               </div>
+              {showRerun && canRerun(t.status) ? (
+                <div className="mt-2">
+                  <RerunTaskButton
+                    runId={runId!}
+                    taskId={t.id}
+                    downstreamCount={transitiveDownstream(tasks, t.taskKey).size}
+                    onRerun={onRerun}
+                  />
+                </div>
+              ) : null}
             </li>
           );
         })}

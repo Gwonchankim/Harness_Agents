@@ -60,6 +60,8 @@ export class RateLimitError extends Error {
   constructor(
     public readonly provider: string,
     public readonly status?: number,
+    /** Provider-suggested wait (ms) from a `Retry-After` header, when present. */
+    public readonly retryAfterMs?: number,
   ) {
     super(`rate_limit: provider ${provider} is rate limiting${status ? ` (${status})` : ''}`);
     this.name = 'RateLimitError';
@@ -269,7 +271,7 @@ export function raiseProviderError(
       invalidateProviderAvailability(ctx.provider);
       throw new PoAuthError(ctx.provider, c.status ?? 401);
     case 'rate_limit':
-      throw new RateLimitError(ctx.provider, c.status);
+      throw new RateLimitError(ctx.provider, c.status, c.retryAfterMs);
     case 'model_not_found':
       throw new ModelNotFoundError(ctx.provider, ctx.modelId);
     case 'schema':
