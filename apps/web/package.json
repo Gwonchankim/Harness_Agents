@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/secrets/redactor.test.ts src/lib/workspace/paths.test.ts src/lib/workspace/exportService.test.ts src/lib/tools/policy.test.ts src/lib/qa/skipPolicy.test.ts src/lib/qa/sessionState.test.ts src/lib/team/serialize.test.ts src/lib/search/teamSearch.test.ts src/lib/dag/topo.test.ts src/lib/events/redactor.test.ts src/lib/feedback/diff.test.ts src/lib/results/report.test.ts src/lib/results/agentReport.test.ts src/lib/runs/resumeTarget.test.ts src/lib/runs/failureClass.test.ts src/lib/runs/cancelState.test.ts src/lib/teams/ratings.test.ts src/lib/teams/library.test.ts src/lib/agents/providerError.test.ts src/lib/agents/poErrorResponse.test.ts",
+    "test": "tsx --test src/lib/secrets/redactor.test.ts src/lib/workspace/paths.test.ts src/lib/workspace/exportService.test.ts src/lib/tools/policy.test.ts src/lib/qa/skipPolicy.test.ts src/lib/qa/sessionState.test.ts src/lib/team/serialize.test.ts src/lib/search/teamSearch.test.ts src/lib/dag/topo.test.ts src/lib/events/redactor.test.ts src/lib/feedback/diff.test.ts src/lib/results/report.test.ts src/lib/results/agentReport.test.ts src/lib/runs/resumeTarget.test.ts src/lib/runs/failureClass.test.ts src/lib/runs/cancelState.test.ts src/lib/teams/ratings.test.ts src/lib/teams/library.test.ts src/lib/agents/providerError.test.ts src/lib/agents/poErrorResponse.test.ts src/lib/dag/downstream.test.ts src/lib/runs/resumePlan.test.ts src/lib/runs/backoffPolicy.test.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

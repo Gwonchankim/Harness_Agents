@@ -7,6 +7,7 @@ import { classifyFailure } from '@lib/runs/failureClass';
 import { RetryRunButton } from '@/components/runs/RetryRunButton';
 
 import { AgentReportPane } from './AgentReportPane';
+import { ResumeRunButton } from './ResumeRunButton';
 import { DagGraph } from './DagGraph';
 import { RunProgressOverlay, type RunProgressStage } from './RunProgressOverlay';
 
@@ -87,9 +88,11 @@ const RUN_EVENT_TYPES = [
   'agent.output.completed',
   'task.completed',
   'task.failed',
+  'task.retry.attempt',
   'result.created',
   'run.completed',
   'run.cancelled',
+  'run.resumed',
 ] as const;
 
 type Action =
@@ -124,6 +127,10 @@ function reducer(state: State, action: Action): State {
           status = 'failed';
           const p = ev.payload as { failedReason?: string };
           failedReason = p?.failedReason ?? 'user_cancelled';
+        }
+        if (ev.type === 'run.resumed') {
+          status = 'running';
+          failedReason = null;
         }
       }
       const lastEventId =
@@ -167,9 +174,11 @@ function applyEvent(
     case 'task.started': {
       const p = ev.payload as { taskKey?: string };
       if (typeof p?.taskKey === 'string') {
+        // Reset this task's output buffer on (re)start so a resumed/retried
+        // attempt's stream does not concatenate onto the previous attempt.
         return {
           tasks: updateTaskByKey(p.taskKey, { status: 'running', startedAt: ev.createdAt }),
-          taskOutputs: outputs,
+          taskOutputs: { ...outputs, [p.taskKey]: '' },
         };
       }
       break;
@@ -214,17 +223,25 @@ function applyEvent(
 }
 
 function initialReducerState(initial: InitialState): State {
+  // Rebuild outputs by replaying the streamed deltas with the same reset-on-start
+  // semantics as the live reducer: each `task.started` clears the buffer so only
+  // the latest attempt's stream survives (matters after resume/retry). Then fall
+  // back to the persisted `Task.result` for done tasks whose deltas are not in the
+  // event window (so their output is never blank, and never doubled).
   const outputs: Record<string, string> = {};
-  for (const t of initial.tasks) {
-    if (t.result) outputs[t.taskKey] = t.result;
-  }
   for (const ev of initial.events) {
-    if (ev.type === 'agent.output.delta') {
+    if (ev.type === 'task.started') {
+      const p = ev.payload as { taskKey?: string };
+      if (typeof p?.taskKey === 'string') outputs[p.taskKey] = '';
+    } else if (ev.type === 'agent.output.delta') {
       const p = ev.payload as { taskKey?: string; text?: string };
       if (typeof p?.taskKey === 'string' && typeof p.text === 'string') {
         outputs[p.taskKey] = (outputs[p.taskKey] ?? '') + p.text;
       }
     }
+  }
+  for (const t of initial.tasks) {
+    if (t.result && !outputs[t.taskKey]) outputs[t.taskKey] = t.result;
   }
   return {
     status: initial.status,
@@ -256,6 +273,14 @@ export function RunStream({ runId, initial }: Props) {
   const showRetryPanel =
     state.status === 'failed' &&
     classifyFailure(state.failedReason).recoveryAction === 'retry';
+  // Resumable = failed run that has a plan (tasks exist) with at least one
+  // failed/cancelled task. Done tasks are reused; only the rest re-run.
+  const resumableDoneCount = state.tasks.filter((t) => t.status === 'done').length;
+  const resumable =
+    state.status === 'failed' &&
+    state.tasks.length > 0 &&
+    resumableDoneCount > 0 &&
+    state.tasks.some((t) => t.status === 'failed' || t.status === 'cancelled');
 
   useEffect(() => {
     if (isTerminal) {
@@ -535,10 +560,21 @@ export function RunStream({ runId, initial }: Props) {
           />
         ) : null}
 
+        {resumable ? (
+          <ResumeRunButton
+            runId={runId}
+            doneCount={resumableDoneCount}
+            onResumed={() =>
+              dispatch({ type: 'set-run-meta', status: 'running', failedReason: null })
+            }
+          />
+        ) : null}
+
         {showRetryPanel ? (
           <RetryRunButton
             runId={runId}
             failedReason={state.failedReason}
+            actionLabel={resumable ? 'Retry from scratch' : undefined}
             onReset={() =>
               dispatch({ type: 'set-run-meta', status: 'ready', failedReason: null })
             }
