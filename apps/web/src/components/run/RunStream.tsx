@@ -2,6 +2,10 @@
 
 import { useEffect, useReducer, useState } from 'react';
 
+import { classifyFailure } from '@lib/runs/failureClass';
+
+import { RetryRunButton } from '@/components/runs/RetryRunButton';
+
 import { AgentReportPane } from './AgentReportPane';
 import { DagGraph } from './DagGraph';
 
@@ -242,6 +246,9 @@ export function RunStream({ runId, initial }: Props) {
 
   const isTerminal = state.status === 'succeeded' || state.status === 'failed';
   const recoverableModelFailure = isRecoverableModelFailure(state.failedReason);
+  const showRetryPanel =
+    state.status === 'failed' &&
+    classifyFailure(state.failedReason).recoveryAction === 'retry';
 
   useEffect(() => {
     if (isTerminal) {
@@ -514,6 +521,16 @@ export function RunStream({ runId, initial }: Props) {
             saving={savingModels}
             message={modelSaveMessage}
             error={modelSaveError}
+          />
+        ) : null}
+
+        {showRetryPanel ? (
+          <RetryRunButton
+            runId={runId}
+            failedReason={state.failedReason}
+            onReset={() =>
+              dispatch({ type: 'set-run-meta', status: 'ready', failedReason: null })
+            }
           />
         ) : null}
 

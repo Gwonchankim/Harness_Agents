@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useState } from 'react';
 
 import type { AgentCardData } from './AgentFeedbackCard';
@@ -7,15 +8,24 @@ import { AgentFeedbackGrid } from './AgentFeedbackGrid';
 import { ResultFeedback } from './ResultFeedback';
 import { RevisionReview } from './RevisionReview';
 
+export interface ExistingFeedback {
+  resultRating: number | null;
+  ratedAgents: number;
+  submittedAt: string;
+  appliedRevisionVersion: number | null;
+}
+
 interface Props {
   runId: string;
   resultMarkdown: string | null;
   agents: AgentCardData[];
+  teamId?: string;
+  existing?: ExistingFeedback | null;
 }
 
 type AgentState = Record<string, { rating: number | null; comment: string }>;
 
-export function FeedbackForm({ runId, resultMarkdown, agents }: Props) {
+export function FeedbackForm({ runId, resultMarkdown, agents, teamId, existing }: Props) {
   const [resultRating, setResultRating] = useState<number | null>(null);
   const [resultComment, setResultComment] = useState('');
   const [agentState, setAgentState] = useState<AgentState>(() =>
@@ -24,6 +34,7 @@ export function FeedbackForm({ runId, resultMarkdown, agents }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitted, setSubmitted] = useState(false);
+  const [showForm, setShowForm] = useState(!existing);
 
   const canSubmit =
     resultRating != null ||
@@ -86,6 +97,17 @@ export function FeedbackForm({ runId, resultMarkdown, agents }: Props) {
     );
   }
 
+  if (existing && !showForm) {
+    return (
+      <ExistingFeedbackView
+        existing={existing}
+        runId={runId}
+        teamId={teamId}
+        onNew={() => setShowForm(true)}
+      />
+    );
+  }
+
   return (
     <div className="space-y-6">
       <ResultFeedback
@@ -119,6 +141,56 @@ export function FeedbackForm({ runId, resultMarkdown, agents }: Props) {
         ) : null}
         {error ? <span className="text-sm text-rose-600">{error}</span> : null}
       </div>
+    </div>
+  );
+}
+
+function ExistingFeedbackView({
+  existing,
+  runId,
+  teamId,
+  onNew,
+}: {
+  existing: ExistingFeedback;
+  runId: string;
+  teamId?: string;
+  onNew: () => void;
+}) {
+  return (
+    <div className="space-y-6">
+      <div className="space-y-3 rounded-md border border-current/15 bg-current/5 p-4 text-sm">
+        <p className="font-medium">Feedback already submitted</p>
+        <p className="opacity-75">
+          Submitted {new Date(existing.submittedAt).toLocaleString()} ·{' '}
+          {existing.resultRating != null ? `result ${existing.resultRating}/5` : 'no result score'} ·{' '}
+          {existing.ratedAgents} agent{existing.ratedAgents === 1 ? '' : 's'} rated
+        </p>
+        {existing.appliedRevisionVersion != null ? (
+          <p className="opacity-75">
+            A team revision (v{existing.appliedRevisionVersion}) was created from this feedback.
+            {teamId ? (
+              <>
+                {' '}
+                <Link
+                  href={`/teams/${teamId}` as never}
+                  className="underline underline-offset-4"
+                >
+                  View team →
+                </Link>
+              </>
+            ) : null}
+          </p>
+        ) : null}
+        <button
+          type="button"
+          onClick={onNew}
+          className="rounded-md border border-current/30 px-4 py-2 text-sm font-medium hover:bg-current/5"
+        >
+          Submit new feedback
+        </button>
+      </div>
+
+      {existing.appliedRevisionVersion == null ? <RevisionReview runId={runId} /> : null}
     </div>
   );
 }

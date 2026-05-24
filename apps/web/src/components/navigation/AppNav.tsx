@@ -4,14 +4,20 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 interface NavLink {
-  href: '/' | '/runs/new' | '/settings';
+  href: '/' | '/runs' | '/runs/new' | '/teams' | '/settings';
   label: string;
   isActive: (pathname: string) => boolean;
 }
 
 const NAV_LINKS: readonly NavLink[] = [
   { href: '/', label: 'Harness Agents', isActive: (p) => p === '/' },
-  { href: '/runs/new', label: 'New run', isActive: (p) => p.startsWith('/runs') },
+  {
+    href: '/runs',
+    label: 'Runs',
+    isActive: (p) => p.startsWith('/runs') && !p.startsWith('/runs/new'),
+  },
+  { href: '/runs/new', label: 'New run', isActive: (p) => p.startsWith('/runs/new') },
+  { href: '/teams', label: 'Teams', isActive: (p) => p.startsWith('/teams') },
   { href: '/settings', label: 'Settings', isActive: (p) => p.startsWith('/settings') },
 ];
 
@@ -35,7 +41,7 @@ export function AppNav() {
         );
       })}
       <span className="ml-auto rounded-full border border-current/20 px-2 py-0.5 text-xs opacity-60">
-        Phase 5
+        Phase 6
       </span>
     </nav>
   );
