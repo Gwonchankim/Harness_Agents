@@ -23,6 +23,7 @@ import {
   buildFinalResultMarkdown,
   exportRunResultMd,
 } from '@lib/results/finalResult';
+import { exportRunReports } from '@lib/results/exportReports';
 import {
   resolveProviderName,
   UnknownProviderError,
@@ -426,6 +427,14 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
     type: 'run.completed',
     payload: { success: true, succeededTasks, failedTasks: 0 },
   });
+
+  // Phase 5: best-effort report.md + agent-reports export. The result.md flow
+  // above is unchanged; a failure here never affects run success.
+  try {
+    await exportRunReports(runId);
+  } catch (err) {
+    console.error('run reports export failed:', err);
+  }
 }
 
 async function exportFinalResult(input: {

@@ -9,6 +9,8 @@ import { appendEvent } from '@lib/events/append';
 
 let recovered: Promise<void> | null = null;
 
+const DEFAULT_RECOVERY_STALE_MS = 15 * 60 * 1000;
+
 export function ensureRecovered(): Promise<void> {
   if (recovered) return recovered;
   recovered = recoverInterruptedRuns().catch((err) => {
@@ -18,8 +20,12 @@ export function ensureRecovered(): Promise<void> {
 }
 
 async function recoverInterruptedRuns(): Promise<void> {
+  const cutoff = new Date(Date.now() - recoveryStaleMs());
   const stale = await prisma.run.findMany({
-    where: { status: { in: ['planning', 'running'] } },
+    where: {
+      status: { in: ['planning', 'running'] },
+      updatedAt: { lt: cutoff },
+    },
     select: { id: true },
   });
   if (stale.length === 0) return;
@@ -50,4 +56,9 @@ async function recoverInterruptedRuns(): Promise<void> {
       console.error('recovery_append_event_failed:', err);
     }
   }
+}
+
+function recoveryStaleMs(): number {
+  const raw = Number(process.env.HARNESS_RECOVERY_STALE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_RECOVERY_STALE_MS;
 }

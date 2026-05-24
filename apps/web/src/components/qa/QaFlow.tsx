@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 
-import type { SessionView } from '@lib/qa/sessionState';
+import type { QaQuestionView, SessionView } from '@lib/qa/sessionState';
 
 import { QuestionCard } from './QuestionCard';
 import { Timeline } from './Timeline';
@@ -240,11 +240,12 @@ export function QaFlow({ initial, poProvider = null }: Props) {
   const interactionLocked = state.pendingOperation != null || isWaitingForNextQuestion;
   const showLoadingOverlay =
     interactionLocked && !state.error && !state.view.isComplete;
+  const displayedMaxQuestions = getDisplayedMaxQuestions(state.view, active);
   const loadingState = getLoadingState({
     pendingOperation: state.pendingOperation,
     isWaitingForNextQuestion,
     maxAnsweredOrder: state.view.maxAnsweredOrder,
-    maxQuestions: 6,
+    maxQuestions: displayedMaxQuestions,
     provider: poProvider,
   });
 
@@ -260,7 +261,7 @@ export function QaFlow({ initial, poProvider = null }: Props) {
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs opacity-70">
           <span>
-            Progress: {state.view.maxAnsweredOrder} / 6
+            Progress: {state.view.maxAnsweredOrder} / {displayedMaxQuestions}
             {stalePending ? ` (${state.view.staleQuestions.length} stale)` : ''}
           </span>
           <span>{statusLabel(state, isWaitingForNextQuestion)}</span>
@@ -341,6 +342,17 @@ function statusLabel(state: State, isWaitingForNextQuestion: boolean): string {
   }
   if (isWaitingForNextQuestion) return 'Generating next question…';
   return 'Active';
+}
+
+function getDisplayedMaxQuestions(
+  view: SessionView,
+  active: QaQuestionView | null,
+): number {
+  if (view.isComplete) return Math.max(view.maxAnsweredOrder, 5);
+  if (active?.isFinal) return Math.max(active.order, view.maxAnsweredOrder + 1, 5);
+  const firstFinal = view.questions.find((q) => q.isFinal);
+  if (firstFinal) return Math.max(firstFinal.order, view.maxAnsweredOrder, 5);
+  return 6;
 }
 
 interface LoadingState {

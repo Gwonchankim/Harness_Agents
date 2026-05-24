@@ -5,7 +5,6 @@
 import { generateObject } from '@lib/agents/runtime';
 import {
   getEnabledModelOrThrow,
-  getProviderAvailability,
   invalidateProviderAvailability,
   resolveProviderName,
   UnknownProviderError,
@@ -192,10 +191,6 @@ async function resolveAndCheckProvider(modelId: string) {
   const row = await getEnabledModelOrThrow(modelId);
   const provider = resolveProviderName(row.provider);
   if (!provider) throw new UnknownProviderError(row.provider);
-  const availability = await getProviderAvailability(provider);
-  if (!availability.available) {
-    throw new ProviderUnavailableError(provider, availability.reason);
-  }
   return { provider, modelId: row.modelId };
 }
 
