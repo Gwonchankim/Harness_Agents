@@ -109,6 +109,7 @@ export async function PATCH(
       run.failedReason?.startsWith('lead_plan_provider_auth:') ||
       run.failedReason?.startsWith('lead_plan_unknown_provider:') ||
       run.failedReason === 'lead_plan_schema_error' ||
+      run.failedReason?.startsWith('lead_plan_model_not_found:') ||
       run.failedReason?.startsWith('lead_plan_timeout:'));
 
   const result = await prisma.$transaction(async (tx) => {

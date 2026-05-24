@@ -41,7 +41,7 @@ export function AppNav() {
         );
       })}
       <span className="ml-auto rounded-full border border-current/20 px-2 py-0.5 text-xs opacity-60">
-        Phase 6
+        Phase 7
       </span>
     </nav>
   );

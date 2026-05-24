@@ -17,7 +17,10 @@ export type FailureCategory =
   | 'provider_unknown'
   | 'schema_error'
   | 'timeout'
+  | 'rate_limit'
+  | 'model_not_found'
   | 'aborted'
+  | 'cancelled'
   | 'plan_invalid'
   | 'plan_failed'
   | 'task_failed'
@@ -38,6 +41,15 @@ export function classifyFailure(failedReason: string | null | undefined): Failur
   const reason = failedReason ?? '';
   if (!reason) {
     return { category: 'none', recoveryAction: 'none', title: '', help: '' };
+  }
+
+  if (reason === 'user_cancelled') {
+    return {
+      category: 'cancelled',
+      recoveryAction: 'retry',
+      title: 'Run cancelled',
+      help: 'You cancelled this run. Retry starts it again from the beginning — a run that already had a plan starts as a fresh copy and keeps this cancelled run for reference.',
+    };
   }
 
   if (reason.startsWith('lead_plan_provider_unavailable:')) {
@@ -62,6 +74,25 @@ export function classifyFailure(failedReason: string | null | undefined): Failur
       recoveryAction: 'edit-models',
       title: 'Unknown provider',
       help: 'A configured model points at a provider the app does not recognize. Switch the agents to a known provider/model, then save to retry.',
+    };
+  }
+  if (reason.startsWith('lead_plan_rate_limit:') || reason.startsWith('rate_limit:')) {
+    return {
+      category: 'rate_limit',
+      recoveryAction: 'retry',
+      title: 'Provider rate limit reached',
+      help: 'The provider is rate limiting requests. Wait a moment and retry, or switch the affected agents to a different provider/model.',
+    };
+  }
+  if (
+    reason.startsWith('lead_plan_model_not_found:') ||
+    reason.startsWith('model_not_found:')
+  ) {
+    return {
+      category: 'model_not_found',
+      recoveryAction: 'edit-models',
+      title: 'Model not found',
+      help: 'A configured model is not recognized by its provider. Switch the affected agents to a valid model, then save to retry.',
     };
   }
   if (reason === 'lead_plan_schema_error') {

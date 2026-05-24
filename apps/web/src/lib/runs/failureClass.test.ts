@@ -41,6 +41,24 @@ test('classifyFailure: categories map precisely', () => {
   assert.equal(classifyFailure('something_else').category, 'unknown');
 });
 
+test('classifyFailure: user_cancelled → cancelled / retry', () => {
+  const c = classifyFailure('user_cancelled');
+  assert.equal(c.category, 'cancelled');
+  assert.equal(c.recoveryAction, 'retry');
+  assert.ok(c.title.length > 0);
+  assert.ok(c.help.length > 0);
+});
+
+test('classifyFailure: rate_limit → retry, model_not_found → edit-models', () => {
+  const rate = classifyFailure('lead_plan_rate_limit:openai');
+  assert.equal(rate.category, 'rate_limit');
+  assert.equal(rate.recoveryAction, 'retry');
+
+  const notFound = classifyFailure('lead_plan_model_not_found:google');
+  assert.equal(notFound.category, 'model_not_found');
+  assert.equal(notFound.recoveryAction, 'edit-models');
+});
+
 test('classifyFailure: unknown reason still retryable with copy', () => {
   const c = classifyFailure('weird_reason');
   assert.equal(c.recoveryAction, 'retry');

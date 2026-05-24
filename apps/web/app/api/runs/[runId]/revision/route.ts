@@ -6,7 +6,13 @@
 
 import { NextResponse } from 'next/server';
 
-import { PoAuthError, PoSchemaError, ProviderUnavailableError } from '@lib/agents/po';
+import {
+  ModelNotFoundError,
+  PoAuthError,
+  PoSchemaError,
+  ProviderUnavailableError,
+  RateLimitError,
+} from '@lib/agents/po';
 import { UnknownProviderError } from '@lib/models/catalog';
 import { GenerateAbortedError, GenerateTimeoutError } from '@lib/qa/timeout';
 import { approveRevision, RevisionApproveError, RevisionStaleError } from '@lib/revision/approve';
@@ -98,6 +104,18 @@ function mapRevisionError(err: unknown): NextResponse {
     return NextResponse.json(
       { error: 'lead_revise_provider_auth', provider: err.provider },
       { status: 502 },
+    );
+  }
+  if (err instanceof RateLimitError) {
+    return NextResponse.json(
+      { error: 'lead_revise_rate_limit', provider: err.provider },
+      { status: 429 },
+    );
+  }
+  if (err instanceof ModelNotFoundError) {
+    return NextResponse.json(
+      { error: 'lead_revise_model_not_found', provider: err.provider, modelId: err.modelId },
+      { status: 404 },
     );
   }
   if (err instanceof ProviderUnavailableError) {

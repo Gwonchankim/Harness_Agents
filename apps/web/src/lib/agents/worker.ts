@@ -5,11 +5,9 @@
 // RunEvent + emits on the bus).
 
 import { streamText } from '@lib/agents/runtime';
-import { invalidateProviderAvailability } from '@lib/models/catalog';
-import { redactString } from '@lib/secrets/redactor';
 import { resolvePoGenerateTimeoutMs } from '@lib/qa/timeout';
 
-import { PoAuthError, ProviderUnavailableError } from './po';
+import { raiseProviderError } from './po';
 
 const TASK_MAX_TOKENS = 2048;
 const DELTA_FLUSH_BYTES = 1024;
@@ -77,16 +75,10 @@ export async function runAgentTask(ctx: AgentTaskCtx): Promise<AgentTaskResult> 
     }
     return { text: completeText, bytes: Buffer.byteLength(completeText, 'utf8') };
   } catch (err) {
-    const status = extractAuthStatus(err);
-    if (status != null) {
-      invalidateProviderAvailability(ctx.agent.provider);
-      throw new PoAuthError(ctx.agent.provider, status);
-    }
-    invalidateProviderAvailability(ctx.agent.provider);
-    throw new ProviderUnavailableError(
-      ctx.agent.provider,
-      err instanceof Error ? redactString(err.message).slice(0, 240) : String(err),
-    );
+    raiseProviderError(err, {
+      provider: ctx.agent.provider,
+      modelId: ctx.agent.modelId,
+    });
   } finally {
     composite.clear();
   }
@@ -147,20 +139,4 @@ function compositeAbort(parent: AbortSignal | undefined, timeoutMs: number): Com
       for (const fn of cleanups) fn();
     },
   };
-}
-
-function extractAuthStatus(err: unknown): number | null {
-  const candidate =
-    err && typeof err === 'object'
-      ? ((err as { statusCode?: unknown; status?: unknown }).statusCode ??
-        (err as { status?: unknown }).status)
-      : undefined;
-  if (typeof candidate === 'number' && (candidate === 401 || candidate === 403)) {
-    return candidate;
-  }
-  if (err instanceof Error) {
-    if (/\b401\b|unauthorized/i.test(err.message)) return 401;
-    if (/\b403\b|forbidden/i.test(err.message)) return 403;
-  }
-  return null;
 }

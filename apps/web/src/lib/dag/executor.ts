@@ -35,9 +35,11 @@ import {
   GenerateTimeoutError,
 } from '@lib/qa/timeout';
 import {
+  ModelNotFoundError,
   PoAuthError,
   PoSchemaError,
   ProviderUnavailableError,
+  RateLimitError,
 } from '@lib/agents/po';
 
 const inFlight = new Set<string>();
@@ -150,6 +152,7 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
       signal,
     });
   } catch (err) {
+    if (signal?.aborted) return; // cancel.ts owns the cancelled terminal state
     const reason = mapPlanErrorReason(err);
     await markRunFailed(runId, reason);
     await appendEvent({
@@ -164,6 +167,9 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
     });
     return;
   }
+
+  // A cancel that landed during planning has already written the terminal state.
+  if (signal?.aborted) return;
 
   const agentByName = new Map(run.team.agents.map((a) => [a.name, a] as const));
   const planRow = await prisma.$transaction(async (tx) => {
@@ -216,6 +222,7 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
     console.error('plan.md export failed:', err);
   }
 
+  if (signal?.aborted) return;
   await prisma.run.update({ where: { id: runId }, data: { status: 'running' } });
 
   const taskRows = await prisma.task.findMany({
@@ -251,6 +258,7 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
   let failedTasks = 0;
 
   for (const t of order) {
+    if (signal?.aborted) return; // stop before starting another task on cancel
     const ag = run.team.agents.find((a) => a.id === t.agentId);
     if (!ag) {
       const reason = `agent_not_found:${t.taskKey}`;
@@ -371,6 +379,7 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
       });
       succeededTasks += 1;
     } catch (err) {
+      if (signal?.aborted) return; // cancel.ts owns the cancelled terminal state
       const durationMs = Date.now() - taskStartedAt;
       const errorMsg = redactString(
         err instanceof Error ? err.message : String(err),
@@ -401,6 +410,9 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
       return;
     }
   }
+
+  // A cancel that landed after the last task finished must not flip to succeeded.
+  if (signal?.aborted) return;
 
   await exportFinalResult({
     projectSlug: run.project.slug,
@@ -515,6 +527,10 @@ function mapPlanErrorReason(err: unknown): string {
   if (err instanceof GenerateTimeoutError) return `lead_plan_timeout:${err.timeoutMs}ms`;
   if (err instanceof GenerateAbortedError) return 'lead_plan_aborted';
   if (err instanceof PoAuthError) return `lead_plan_provider_auth:${err.provider}`;
+  if (err instanceof RateLimitError) return `lead_plan_rate_limit:${err.provider}`;
+  if (err instanceof ModelNotFoundError) {
+    return `lead_plan_model_not_found:${err.provider}`;
+  }
   if (err instanceof ProviderUnavailableError) {
     return `lead_plan_provider_unavailable:${err.provider}`;
   }

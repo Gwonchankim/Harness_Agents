@@ -42,6 +42,7 @@ export function RetryRunButton({ runId, failedReason, onReset }: Props) {
       }
       setDone('This run is ready to start again.');
       onReset?.();
+      window.location.assign(`/runs/${data.runId ?? runId}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
