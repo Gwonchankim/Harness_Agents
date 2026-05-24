@@ -20,7 +20,7 @@ export const nextQuestionSchema = z.object({
 export type NextQuestionPayload = z.infer<typeof nextQuestionSchema>;
 
 export const judgeSchema = z.object({
-  choiceIndex: z.union([z.literal(1), z.literal(2), z.literal(3), z.literal(4)]),
+  choiceIndex: z.number().int().min(1).max(4),
   rationale: z.string().min(1).max(240),
 });
 

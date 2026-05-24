@@ -36,6 +36,7 @@ Update this file at the end of each Phase.
 - Compose-to-run start shortcut added on 2026-05-24: team-confirmed panels now start the run directly from the compose success screen and then navigate to `/runs/{runId}`, removing the extra Open Run -> Start Run step.
 - Lead planning recovery added on 2026-05-24: Lead DAG planning now retries schema failures once with a strict repair prompt, and persistent `lead_plan_schema_error` / `lead_plan_timeout:*` failures expose the existing team model editor so the user can switch the Lead to a stronger/faster model and reset the Run to `ready`.
 - Run progress live-state reconciliation added on 2026-05-24: Run detail now falls back to polling if SSE stays in `connecting...`, and even healthy SSE sessions periodically reconcile DB state so completed runs move to the Final Result panel without manual refresh.
+- Q&A auto-judge / progress / recovery correction applied on 2026-05-24: PO Q&A no longer blocks on provider availability preflight before generation, final-question progress displays the real final count, and process-restart recovery only sweeps stale planning/running Runs instead of freshly started Runs.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
   - Phase 4 manual smoke (real Lead plan + agent execution + SSE) not yet exercised — first task on the next session before any merge to `main`.
@@ -1397,7 +1398,7 @@ Do not start Phase 5 code. Do not push without explicit instruction.
 
 ## Phase 5 — Result, Feedback, Revision
 
-Status: Not started
+Status: Implemented (2026-05-24) — see `PHASE5_PLAN.md` for the full plan + the 5 approved corrections.
 
 ### Approved Scope
 
@@ -1416,7 +1417,33 @@ Status: Not started
 
 ### Completion Notes
 
-Not completed yet.
+Implemented 2026-05-24 on branch `phase-4-dag-executor`.
+
+**New (lib):** `results/report.ts`, `results/agentReport.ts`, `results/exportReports.ts`,
+`workspace/writeWorkspaceFile.ts`, `feedback/persist.ts`, `feedback/aggregate.ts`,
+`feedback/diff.ts`, `agents/leadRevise.prompt.ts`, `agents/leadRevise.ts`,
+`revision/validate.ts`, `team/revision.ts`, `revision/propose.ts`, `revision/approve.ts`,
+`revision/reject.ts`.
+**New (API):** `api/runs/[runId]/feedback`, `api/runs/[runId]/revision`.
+**New (UI):** `app/runs/[runId]/feedback/page.tsx`, `components/feedback/{RatingInput,
+ResultFeedback,AgentFeedbackCard,AgentFeedbackGrid,RevisionDiff,RevisionReview,FeedbackForm}.tsx`.
+**Edited (minimal):** `dag/executor.ts` (+1 best-effort `exportRunReports` call after success),
+`events/types.ts` (revision event types), `components/run/RunStream.tsx` ("Give feedback" CTA),
+`package.json` (3 new tests).
+
+**Corrections honored:** (1) approve updates agents by agentId only — no delete/create; Lead
+schema echoes agentId. (2) approve requires `baseRevisionId == Team.currentRevisionId`, else
+409 `revision_stale` (re-checked inside the tx). (3) FeedbackBatch append-only; propose uses the
+latest batch. (4) shared `writeWorkspaceFile` is new; `finalResult.ts`/`exportService.ts`/teams
+route untouched. (5) `PHASE5_PLAN.md` UTF-8 verified.
+
+**Schema:** no change (Feedback/AgentRating/TeamRevision already in the init migration).
+
+**Verification (all green):** `typecheck` clean · `test` 101 pass / 0 fail · `next build` ok
+(feedback + revision routes registered) · `prisma migrate status` "up to date".
+
+**Remaining risks:** Lead revise quality depends on the local model (strict-repair retry mitigates);
+proposal uses the stateless round-trip (server re-validates on approve); manual UI smoke still pending.
 
 ## Decision Log
 

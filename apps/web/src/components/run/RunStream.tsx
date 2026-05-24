@@ -519,7 +519,7 @@ export function RunStream({ runId, initial }: Props) {
 
         <DagGraph tasks={state.tasks} agents={state.team.agents} />
 
-        <FinalResultPane finalResult={state.finalResult} status={state.status} />
+        <FinalResultPane finalResult={state.finalResult} status={state.status} runId={runId} />
 
         <AgentReportPane
           tasks={state.tasks}
@@ -731,17 +731,29 @@ function TeamModelRecoveryPanel({
 function FinalResultPane({
   finalResult,
   status,
+  runId,
 }: {
   finalResult: string | null;
   status: string;
+  runId: string;
 }) {
   if (!finalResult && status !== 'succeeded') return null;
 
   return (
     <section className="space-y-3">
-      <h2 className="text-sm font-medium uppercase tracking-wide opacity-60">
-        Final result
-      </h2>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-sm font-medium uppercase tracking-wide opacity-60">
+          Final result
+        </h2>
+        {status === 'succeeded' ? (
+          <a
+            href={`/runs/${runId}/feedback`}
+            className="rounded-md border border-current/30 px-3 py-1 text-xs font-medium hover:bg-current/5"
+          >
+            Give feedback
+          </a>
+        ) : null}
+      </div>
       {finalResult ? (
         <pre className="max-h-[42rem] overflow-auto whitespace-pre-wrap rounded-md border border-current/15 bg-current/5 p-4 text-sm leading-6">
           {finalResult}

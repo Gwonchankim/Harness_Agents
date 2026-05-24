@@ -66,3 +66,29 @@ export interface RunCompletedPayload {
   failedTasks: number;
   failedReason?: string;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 5 — revision lifecycle events. `result.created` (above) is unchanged.
+// ---------------------------------------------------------------------------
+
+export type Phase5EventType =
+  | 'revision.proposed'
+  | 'revision.approved'
+  | 'revision.rejected';
+
+export interface RevisionProposedPayload {
+  baseRevisionId: string;
+  changedAgents: number;
+  added: number;
+  removed: number;
+  reason: string;
+}
+
+export interface RevisionApprovedPayload {
+  revisionId: string;
+  version: number;
+}
+
+export interface RevisionRejectedPayload {
+  baseRevisionId: string | null;
+}
