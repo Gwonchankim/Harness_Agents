@@ -37,9 +37,65 @@ Update this file at the end of each Phase.
 - Lead planning recovery added on 2026-05-24: Lead DAG planning now retries schema failures once with a strict repair prompt, and persistent `lead_plan_schema_error` / `lead_plan_timeout:*` failures expose the existing team model editor so the user can switch the Lead to a stronger/faster model and reset the Run to `ready`.
 - Run progress live-state reconciliation added on 2026-05-24: Run detail now falls back to polling if SSE stays in `connecting...`, and even healthy SSE sessions periodically reconcile DB state so completed runs move to the Final Result panel without manual refresh.
 - Q&A auto-judge / progress / recovery correction applied on 2026-05-24: PO Q&A no longer blocks on provider availability preflight before generation, final-question progress displays the real final count, and process-restart recovery only sweeps stale planning/running Runs instead of freshly started Runs.
+- Phase 6 (Reuse / History / Resume / Retry UX) implemented and verified locally on 2026-05-24 on branch `phase-6-reuse-history-ux`. No schema change, no migration, no new dependencies. typecheck clean; 116 / 116 tests; `next build` 26 routes (4 new: `/runs`, `/teams`, `/teams/[teamId]`, `/api/runs/[runId]/retry`); prisma migrate status clean. Plan in `PHASE6_PLAN.md`. Not yet committed/pushed (user handles git).
+- Phase 6 browser smoke + Team Library search correction completed on 2026-05-24. `/runs`, `/teams`, `/teams/[teamId]`, feedback revisit, and failed-run recovery panels were checked in the in-app browser. Team search now filters non-matching queries instead of only re-ranking all teams. typecheck clean; 119 / 119 tests; `next build` 26 routes; prisma migrate status clean.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
   - Phase 4 manual smoke (real Lead plan + agent execution + SSE) not yet exercised — first task on the next session before any merge to `main`.
+
+## Phase 6 — Reuse / History / Resume / Retry UX (2026-05-24)
+
+Status: Implemented and verified locally. Branch `phase-6-reuse-history-ux`. Plan: `PHASE6_PLAN.md`.
+
+### Approved scope (decisions)
+
+1. Team Library included: `/teams` + `/teams/[teamId]`.
+2. AGENTS.md / team.json preview sourced from the DB snapshot (`TeamRevision.agentsMd` / `teamJson`); disk exports are cache only.
+3. Retry is hybrid: failed run with no `ExecutionPlan` resets in place to `ready`; failed run that already has a plan/tasks clones a new run and preserves the failed one. Executor untouched.
+4. Revision rollback excluded (history read/compare only).
+5. Failed-run model editing keeps the existing `team-models` flow for provider/lead-plan failures; other failures are handled by the new retry action (model edit and retry stay separate).
+
+### New files
+
+- `src/lib/runs/resumeTarget.ts` (+ test) — pure status → continue-target mapping (extracted from home).
+- `src/lib/runs/failureClass.ts` (+ test) — pure `failedReason` → category / recoveryAction / copy.
+- `src/lib/runs/list.ts` — run-list query with status + prompt-search filters.
+- `src/lib/runs/retry.ts` — hybrid retry (reset-in-place vs clone-new-run).
+- `src/lib/teams/ratings.ts` (+ test) — pure read-only rating aggregation.
+- `src/lib/teams/library.ts` — Team Library list + search (reuses `scoreTeams`).
+- `src/lib/teams/teamDetail.ts` — team detail view assembly.
+- `app/api/runs/[runId]/retry/route.ts` — thin retry route.
+- `app/runs/page.tsx`, `app/teams/page.tsx`, `app/teams/[teamId]/page.tsx` — new pages.
+- `src/components/runs/{RunFilterBar,RetryRunButton}.tsx`.
+- `src/components/teams/{TeamCard,SnapshotPreview,RevisionHistory,LinkedRuns}.tsx`.
+
+### Modified files (minimal)
+
+- `app/page.tsx` — uses shared `resumeTarget`, adds Team Library / Runs entry cards + "View all runs".
+- `app/runs/[runId]/feedback/page.tsx` — loads latest `FeedbackBatch` + feedback-driven `TeamRevision`, passes revisit state.
+- `src/components/feedback/FeedbackForm.tsx` — `existing`/`teamId` props + already-submitted summary view (append-only resubmit preserved).
+- `src/components/run/RunStream.tsx` — retry panel for `recoveryAction === 'retry'` failures (coexists with the model-edit panel).
+- `src/components/navigation/AppNav.tsx` — `/runs` + `/teams` links, badge → Phase 6.
+- `apps/web/package.json` — registered the 3 new pure-module tests.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 119 / 119 after adding `src/lib/teams/library.test.ts`.
+- `apps/web/node_modules/.bin/next.cmd build` — PASS, 26 routes (4 new).
+- `apps/web/node_modules/.bin/prisma.cmd migrate status` — PASS, 3 migrations, schema clean (no migration added).
+- Browser manual smoke — PASS for `/runs` status/search filters, `/teams` library, `/teams/[teamId]` active snapshot + revision diff + linked run, and `/runs/{runId}/feedback` revisit state. Failed Lead timeout/provider failures correctly show the model-edit recovery panel. Clone-new-run retry was not exercised because the local DB had no failed run with an existing execution plan.
+
+### Phase 6 Smoke Correction (2026-05-24)
+
+- Issue found: `/teams?q=...` updated the URL and ranking but still showed every active team even for a query with no matches.
+- Fix: `apps/web/src/lib/teams/library.ts` now filters by name, description, domain, and tags before applying the existing `scoreTeams` ranking. Empty queries still return all teams.
+- Test: `apps/web/src/lib/teams/library.test.ts` covers name/description/domain/tag matches, multi-token AND behavior, and empty-query pass-through.
+- Browser re-check: `/teams?q=zzzz-no-match-token` shows `0 teams` + "No teams match this search."; `/teams?q=EduGrowth` shows `1 teams`.
+
+### Deferred (Phase 7+)
+
+- Revision rollback, resume-from-failed-task, embedding recall, AgentRating dashboards, project management UI, team archive/delete and direct (non-revision) team editing.
 
 ## Compose Already-Team Revisit Correction (2026-05-24)
 

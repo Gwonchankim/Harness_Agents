@@ -1,6 +1,7 @@
 import Link from 'next/link';
 
 import { prisma } from '@db/client';
+import { resumeTarget } from '@lib/runs/resumeTarget';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,6 +33,43 @@ export default async function HomePage() {
 
       <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <li className="rounded-lg border border-current/15 p-5">
+          <h2 className="text-base font-medium">Start a new run</h2>
+          <p className="mt-1 text-sm opacity-70">
+            Enter a prompt, pick a PO model, and walk through dynamic clarification cards.
+          </p>
+          <Link
+            href="/runs/new"
+            className="mt-3 inline-block text-sm font-medium underline underline-offset-4"
+          >
+            New run
+          </Link>
+        </li>
+        <li className="rounded-lg border border-current/15 p-5">
+          <h2 className="text-base font-medium">Team Library</h2>
+          <p className="mt-1 text-sm opacity-70">
+            Browse reusable agent teams, inspect their agents, current revision, and
+            revision history.
+          </p>
+          <Link
+            href="/teams"
+            className="mt-3 inline-block text-sm font-medium underline underline-offset-4"
+          >
+            Open Team Library
+          </Link>
+        </li>
+        <li className="rounded-lg border border-current/15 p-5">
+          <h2 className="text-base font-medium">All runs</h2>
+          <p className="mt-1 text-sm opacity-70">
+            Filter every project run by status and search prompts to resume the right one.
+          </p>
+          <Link
+            href="/runs"
+            className="mt-3 inline-block text-sm font-medium underline underline-offset-4"
+          >
+            Browse runs
+          </Link>
+        </li>
+        <li className="rounded-lg border border-current/15 p-5">
           <h2 className="text-base font-medium">Settings</h2>
           <p className="mt-1 text-sm opacity-70">
             Add provider keys, see the active storage backend, and check
@@ -44,18 +82,6 @@ export default async function HomePage() {
             Open settings
           </Link>
         </li>
-        <li className="rounded-lg border border-current/15 p-5">
-          <h2 className="text-base font-medium">Start a new run</h2>
-          <p className="mt-1 text-sm opacity-70">
-            Enter a prompt, pick a PO model, and walk through dynamic clarification cards.
-          </p>
-          <Link
-            href="/runs/new"
-            className="mt-3 inline-block text-sm font-medium underline underline-offset-4"
-          >
-            New run
-          </Link>
-        </li>
       </ul>
 
       <section className="space-y-3">
@@ -66,7 +92,9 @@ export default async function HomePage() {
               See where each run stopped and jump back into the right step.
             </p>
           </div>
-          <span className="text-xs opacity-55">{runs.length} shown</span>
+          <Link href="/runs" className="text-xs underline underline-offset-4 opacity-65 hover:opacity-100">
+            View all runs →
+          </Link>
         </div>
 
         {runs.length === 0 ? (
@@ -76,7 +104,11 @@ export default async function HomePage() {
         ) : (
           <ul className="space-y-3">
             {runs.map((run) => {
-              const resume = getResumeTarget(run);
+              const resume = resumeTarget({
+                id: run.id,
+                status: run.status,
+                qaSession: run.qaSession,
+              });
               return (
                 <li
                   key={run.id}
@@ -116,30 +148,4 @@ export default async function HomePage() {
       </section>
     </section>
   );
-}
-
-function getResumeTarget(run: {
-  id: string;
-  status: string;
-  qaSession: { id: string; status: string } | null;
-  team: { name: string } | null;
-}) {
-  if (run.status === 'po_qa' || run.status === 'pending') {
-    if (run.qaSession?.status === 'completed') {
-      return {
-        label: 'Team composition',
-        href: `/runs/new/${run.qaSession.id}/compose`,
-      };
-    }
-    if (run.qaSession) {
-      return { label: 'Q&A', href: `/runs/new/${run.qaSession.id}` };
-    }
-    return { label: 'Prompt intake', href: '/runs/new' };
-  }
-  if (run.status === 'ready') return { label: 'Ready to start', href: `/runs/${run.id}` };
-  if (run.status === 'planning') return { label: 'Planning', href: `/runs/${run.id}` };
-  if (run.status === 'running') return { label: 'Team working', href: `/runs/${run.id}` };
-  if (run.status === 'succeeded') return { label: 'Execution complete', href: `/runs/${run.id}` };
-  if (run.status === 'failed') return { label: 'Needs attention', href: `/runs/${run.id}` };
-  return { label: run.status, href: `/runs/${run.id}` };
 }

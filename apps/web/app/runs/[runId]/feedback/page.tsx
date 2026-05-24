@@ -109,6 +109,29 @@ export default async function FeedbackPage({ params }: PageProps) {
       .map((t) => ({ taskKey: t.taskKey, title: t.title, status: t.status, text: t.text })),
   }));
 
+  // Revisit awareness: surface a prior submission and any feedback-driven revision
+  // so re-entering the page shows a summary instead of a blank form.
+  const [latestBatch, appliedRevision] = await Promise.all([
+    prisma.feedbackBatch.findFirst({
+      where: { runId },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, resultRating: true, createdAt: true, _count: { select: { ratings: true } } },
+    }),
+    prisma.teamRevision.findFirst({
+      where: { sourceRunId: runId, feedbackBatchId: { not: null } },
+      orderBy: { version: 'desc' },
+      select: { version: true },
+    }),
+  ]);
+  const existing = latestBatch
+    ? {
+        resultRating: latestBatch.resultRating,
+        ratedAgents: latestBatch._count.ratings,
+        submittedAt: latestBatch.createdAt.toISOString(),
+        appliedRevisionVersion: appliedRevision?.version ?? null,
+      }
+    : null;
+
   return (
     <section className="space-y-6">
       <RunContextHeader
@@ -118,7 +141,13 @@ export default async function FeedbackPage({ params }: PageProps) {
         teamName={run.team.name}
       />
       <BackLink runId={run.id} />
-      <FeedbackForm runId={run.id} resultMarkdown={resultMarkdown} agents={agents} />
+      <FeedbackForm
+        runId={run.id}
+        teamId={run.team.id}
+        resultMarkdown={resultMarkdown}
+        agents={agents}
+        existing={existing}
+      />
     </section>
   );
 }
