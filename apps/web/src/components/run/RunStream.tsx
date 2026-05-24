@@ -385,6 +385,14 @@ export function RunStream({ runId, initial }: Props) {
             }, 5000);
           }
         };
+        const closeLiveStream = () => {
+          cancelled = true;
+          es?.close();
+          es = null;
+          if (connectTimer) clearTimeout(connectTimer);
+          if (reconcileTimer) clearInterval(reconcileTimer);
+          dispatch({ type: 'set-transport', transport: 'closed' });
+        };
         const handleEvent = (ev: MessageEvent<string>) => {
           try {
             const parsed = JSON.parse(ev.data) as InitialEvent;
@@ -394,10 +402,16 @@ export function RunStream({ runId, initial }: Props) {
               events: [{ ...parsed, id }],
             });
             if (id) lastSeen = id;
-            if (parsed.type === 'result.created' || parsed.type === 'run.completed') {
-              void fetchStateSnapshot().catch(() => {
-                /* polling fallback will recover */
-              });
+            const terminalEvent =
+              parsed.type === 'run.completed' || parsed.type === 'run.cancelled';
+            if (parsed.type === 'result.created' || terminalEvent) {
+              void fetchStateSnapshot()
+                .catch(() => {
+                  /* polling fallback will recover non-terminal hard errors */
+                })
+                .finally(() => {
+                  if (terminalEvent) closeLiveStream();
+                });
             }
           } catch {
             /* ignore malformed */
@@ -425,7 +439,7 @@ export function RunStream({ runId, initial }: Props) {
       if (reconcileTimer) clearInterval(reconcileTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId, isTerminal]);
+  }, [runId]);
 
   async function startRun() {
     setStarting(true);
