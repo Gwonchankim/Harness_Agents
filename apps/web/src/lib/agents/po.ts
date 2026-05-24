@@ -13,11 +13,11 @@ import { redactString } from '@lib/secrets/redactor';
 
 import type { PoQuestionOption } from '@lib/qa/skipPolicy';
 import {
-  GenerateAbortedError,
   GenerateTimeoutError,
   resolvePoGenerateTimeoutMs,
   runWithGenerateTimeout,
 } from '@lib/qa/timeout';
+import { classifyGenerateError } from './providerError';
 import {
   buildJudgeMessages,
   buildNextQuestionMessages,
@@ -53,6 +53,26 @@ export class PoAuthError extends Error {
   ) {
     super(`po_auth_error: provider ${provider} rejected the credentials (${status})`);
     this.name = 'PoAuthError';
+  }
+}
+
+export class RateLimitError extends Error {
+  constructor(
+    public readonly provider: string,
+    public readonly status?: number,
+  ) {
+    super(`rate_limit: provider ${provider} is rate limiting${status ? ` (${status})` : ''}`);
+    this.name = 'RateLimitError';
+  }
+}
+
+export class ModelNotFoundError extends Error {
+  constructor(
+    public readonly provider: string,
+    public readonly modelId: string,
+  ) {
+    super(`model_not_found: provider ${provider} does not recognize model ${modelId}`);
+    this.name = 'ModelNotFoundError';
   }
 }
 
@@ -222,52 +242,44 @@ async function callGenerate<T>(args: CallGenerateArgs<T>): Promise<T> {
     );
     return (result as { object: T }).object;
   } catch (err) {
-    if (err instanceof GenerateAbortedError) throw err;
-    if (err instanceof GenerateTimeoutError) {
-      // Re-throw with the provider/modelId attached so the route can surface
-      // them to the user without doing its own catalog lookup.
-      throw new GenerateTimeoutError(err.timeoutMs, {
-        provider: args.provider,
-        modelId: args.modelId,
+    raiseProviderError(err, { provider: args.provider, modelId: args.modelId });
+  }
+}
+
+/**
+ * Map a raw generate/stream error to the right typed error and throw it. Single
+ * source of truth shared by po / lead / team / leadRevise / worker. Mirrors the
+ * pre-Phase-7 catch chain (auth + provider_unavailable invalidate the provider
+ * availability cache; schema does not) and adds rate_limit + model_not_found.
+ */
+export function raiseProviderError(
+  err: unknown,
+  ctx: { provider: string; modelId: string },
+): never {
+  const c = classifyGenerateError(err);
+  switch (c.kind) {
+    case 'abort':
+      throw err;
+    case 'timeout':
+      throw new GenerateTimeoutError((err as GenerateTimeoutError).timeoutMs, {
+        provider: ctx.provider,
+        modelId: ctx.modelId,
       });
-    }
-    const status = extractAuthStatus(err);
-    if (status != null) {
-      invalidateProviderAvailability(args.provider);
-      throw new PoAuthError(args.provider, status);
-    }
-    if (looksLikeSchemaError(err)) {
+    case 'auth':
+      invalidateProviderAvailability(ctx.provider);
+      throw new PoAuthError(ctx.provider, c.status ?? 401);
+    case 'rate_limit':
+      throw new RateLimitError(ctx.provider, c.status);
+    case 'model_not_found':
+      throw new ModelNotFoundError(ctx.provider, ctx.modelId);
+    case 'schema':
       throw new PoSchemaError(err);
-    }
-    invalidateProviderAvailability(args.provider);
-    throw new ProviderUnavailableError(
-      args.provider,
-      err instanceof Error ? redactString(err.message).slice(0, 240) : String(err),
-    );
+    case 'provider_unavailable':
+    default:
+      invalidateProviderAvailability(ctx.provider);
+      throw new ProviderUnavailableError(
+        ctx.provider,
+        err instanceof Error ? redactString(err.message).slice(0, 240) : String(err),
+      );
   }
-}
-
-function extractAuthStatus(err: unknown): number | null {
-  const candidate =
-    err && typeof err === 'object'
-      ? ((err as { statusCode?: unknown; status?: unknown }).statusCode ??
-        (err as { status?: unknown }).status)
-      : undefined;
-  if (typeof candidate === 'number' && (candidate === 401 || candidate === 403)) {
-    return candidate;
-  }
-  if (err instanceof Error) {
-    if (/\b401\b|unauthorized/i.test(err.message)) return 401;
-    if (/\b403\b|forbidden/i.test(err.message)) return 403;
-  }
-  return null;
-}
-
-function looksLikeSchemaError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  return (
-    err.name === 'AI_NoObjectGeneratedError' ||
-    err.name === 'NoObjectGeneratedError' ||
-    /no object generated|invalid object|zod/i.test(err.message)
-  );
 }

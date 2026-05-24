@@ -5,20 +5,13 @@
 import { generateObject } from '@lib/agents/runtime';
 import {
   getEnabledModelOrThrow,
-  invalidateProviderAvailability,
   resolveProviderName,
   UnknownProviderError,
 } from '@lib/models/catalog';
-import { redactString } from '@lib/secrets/redactor';
 
-import {
-  GenerateAbortedError,
-  GenerateTimeoutError,
-  resolvePoGenerateTimeoutMs,
-  runWithGenerateTimeout,
-} from '@lib/qa/timeout';
+import { resolvePoGenerateTimeoutMs, runWithGenerateTimeout } from '@lib/qa/timeout';
 
-import { PoAuthError, PoSchemaError, ProviderUnavailableError } from './po';
+import { PoSchemaError, raiseProviderError } from './po';
 import {
   buildLeadReviseMessages,
   teamRevisionSchema,
@@ -74,23 +67,7 @@ async function callRevise(
     );
     return (result as { object: TeamRevisionPayload }).object;
   } catch (err) {
-    if (err instanceof GenerateAbortedError) throw err;
-    if (err instanceof GenerateTimeoutError) {
-      throw new GenerateTimeoutError(err.timeoutMs, { provider, modelId });
-    }
-    const status = extractAuthStatus(err);
-    if (status != null) {
-      invalidateProviderAvailability(provider);
-      throw new PoAuthError(provider, status);
-    }
-    if (looksLikeSchemaError(err)) {
-      throw new PoSchemaError(err);
-    }
-    invalidateProviderAvailability(provider);
-    throw new ProviderUnavailableError(
-      provider,
-      err instanceof Error ? redactString(err.message).slice(0, 240) : String(err),
-    );
+    raiseProviderError(err, { provider, modelId });
   }
 }
 
@@ -101,29 +78,4 @@ async function resolveProvider(
   const provider = resolveProviderName(row.provider);
   if (!provider) throw new UnknownProviderError(row.provider);
   return provider;
-}
-
-function extractAuthStatus(err: unknown): number | null {
-  const candidate =
-    err && typeof err === 'object'
-      ? ((err as { statusCode?: unknown; status?: unknown }).statusCode ??
-        (err as { status?: unknown }).status)
-      : undefined;
-  if (typeof candidate === 'number' && (candidate === 401 || candidate === 403)) {
-    return candidate;
-  }
-  if (err instanceof Error) {
-    if (/\b401\b|unauthorized/i.test(err.message)) return 401;
-    if (/\b403\b|forbidden/i.test(err.message)) return 403;
-  }
-  return null;
-}
-
-function looksLikeSchemaError(err: unknown): boolean {
-  if (!(err instanceof Error)) return false;
-  return (
-    err.name === 'AI_NoObjectGeneratedError' ||
-    err.name === 'NoObjectGeneratedError' ||
-    /no object generated|invalid object|zod/i.test(err.message)
-  );
 }

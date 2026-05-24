@@ -24,6 +24,7 @@ const STATUS_STYLE: Record<string, string> = {
   done: 'border-emerald-500/40 bg-emerald-500/10',
   failed: 'border-rose-500/40 bg-rose-500/10',
   blocked: 'border-amber-500/40 bg-amber-500/10',
+  cancelled: 'border-current/25 bg-current/5 opacity-60',
 };
 
 export function DagGraph({ tasks, agents }: { tasks: Task[]; agents: Agent[] }) {

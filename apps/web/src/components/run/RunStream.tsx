@@ -8,6 +8,7 @@ import { RetryRunButton } from '@/components/runs/RetryRunButton';
 
 import { AgentReportPane } from './AgentReportPane';
 import { DagGraph } from './DagGraph';
+import { RunProgressOverlay, type RunProgressStage } from './RunProgressOverlay';
 
 interface InitialAgent {
   id: string;
@@ -44,6 +45,7 @@ interface InitialEvent {
 interface InitialState {
   status: string;
   failedReason: string | null;
+  startedAt: string | null;
   team: { id: string; name: string; agents: InitialAgent[] };
   tasks: InitialTask[];
   events: InitialEvent[];
@@ -76,7 +78,6 @@ interface State {
 }
 
 type ProviderKey = 'openai' | 'anthropic' | 'google' | 'ollama';
-type RunProgressStage = 'starting' | 'planning' | 'running';
 
 const RUN_EVENT_TYPES = [
   'run.started',
@@ -88,6 +89,7 @@ const RUN_EVENT_TYPES = [
   'task.failed',
   'result.created',
   'run.completed',
+  'run.cancelled',
 ] as const;
 
 type Action =
@@ -117,6 +119,11 @@ function reducer(state: State, action: Action): State {
           const p = ev.payload as { success?: boolean; failedReason?: string };
           status = p?.success ? 'succeeded' : 'failed';
           if (p?.failedReason) failedReason = p.failedReason;
+        }
+        if (ev.type === 'run.cancelled') {
+          status = 'failed';
+          const p = ev.payload as { failedReason?: string };
+          failedReason = p?.failedReason ?? 'user_cancelled';
         }
       }
       const lastEventId =
@@ -406,6 +413,7 @@ export function RunStream({ runId, initial }: Props) {
         return;
       }
       dispatch({ type: 'set-run-meta', status: 'planning', failedReason: null });
+      window.location.reload();
     } finally {
       setStarting(false);
     }
@@ -450,6 +458,9 @@ export function RunStream({ runId, initial }: Props) {
           ? 'Models saved. This run is ready to start again.'
           : 'Models saved.',
       );
+      if (body.resetToReady) {
+        window.location.assign(`/runs/${runId}`);
+      }
     } finally {
       setSavingModels(false);
     }
@@ -547,16 +558,30 @@ export function RunStream({ runId, initial }: Props) {
 
       {progressStage ? (
         <RunProgressOverlay
+          runId={runId}
           stage={progressStage}
           transport={transportLabel[state.transport]}
           tasks={state.tasks}
           agents={state.team.agents}
+          startedAt={initial.startedAt}
+          lastEventAt={
+            state.events.length > 0
+              ? state.events[state.events.length - 1]!.createdAt
+              : null
+          }
+          hasLocalModel={state.team.agents.some((a) => a.provider === 'ollama')}
+          onCancelled={() =>
+            dispatch({
+              type: 'set-run-meta',
+              status: 'failed',
+              failedReason: 'user_cancelled',
+            })
+          }
         />
       ) : null}
     </div>
   );
 }
-
 const PROVIDER_LABELS: Record<ProviderKey, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
@@ -575,6 +600,7 @@ function isRecoverableModelFailure(reason: string | null): boolean {
         reason.startsWith('lead_plan_provider_auth:') ||
         reason.startsWith('lead_plan_unknown_provider:') ||
         reason === 'lead_plan_schema_error' ||
+        reason.startsWith('lead_plan_model_not_found:') ||
         reason.startsWith('lead_plan_timeout:')),
   );
 }
@@ -600,6 +626,15 @@ function recoveryCopy(failedReason: string | null): {
         'The Lead agent started planning, but the selected model did not return an execution plan before the timeout.',
       action:
         'Switch the Lead agent to a faster or stronger model, then save. This will return the run to the ready state so you can start it again.',
+    };
+  }
+  if (failedReason?.startsWith('lead_plan_model_not_found:')) {
+    return {
+      title: 'Model not found',
+      reason:
+        'The Lead planning model is not recognized by its provider — it may have been renamed or removed.',
+      action:
+        'Switch the Lead agent to a valid model, then save. This will return the run to the ready state so you can start it again.',
     };
   }
   return {
@@ -781,115 +816,5 @@ function FinalResultPane({
         </p>
       )}
     </section>
-  );
-}
-
-function RunProgressOverlay({
-  stage,
-  transport,
-  tasks,
-  agents,
-}: {
-  stage: RunProgressStage;
-  transport: string;
-  tasks: InitialTask[];
-  agents: InitialAgent[];
-}) {
-  const isPlanning = stage === 'planning';
-  const isRunning = stage === 'running';
-  const totalTasks = tasks.length;
-  const doneTasks = tasks.filter((task) => task.status === 'done').length;
-  const activeTask =
-    tasks.find((task) => task.status === 'running') ??
-    tasks.find((task) => task.status === 'pending') ??
-    null;
-  const activeAgent = activeTask?.agentId
-    ? agents.find((agent) => agent.id === activeTask.agentId)
-    : null;
-  const steps = [
-    {
-      label: 'Start run',
-      status: stage === 'starting' ? 'active' : 'done',
-    },
-    {
-      label: 'Lead plans DAG',
-      status: isPlanning ? 'active' : isRunning ? 'done' : 'pending',
-    },
-    {
-      label: 'Agents execute tasks',
-      status: isRunning ? 'active' : 'pending',
-    },
-    {
-      label: 'Complete run',
-      status: 'pending',
-    },
-  ] as const;
-  const title = isRunning
-    ? 'Agents are working'
-    : isPlanning
-      ? 'Lead is building the DAG'
-      : 'Starting the run';
-  const detail = isRunning
-    ? activeTask
-      ? `${activeAgent?.name ?? 'An agent'} is working on ${activeTask.name}.`
-      : 'The team is executing the planned tasks and streaming progress.'
-    : isPlanning
-      ? 'The Lead agent is reading the prompt, Q&A history, and team roles, then creating task nodes and dependencies.'
-      : 'The app is switching this run into planning mode and preparing the execution worker.';
-
-  return (
-    <div className="absolute inset-0 z-20 flex min-h-[360px] items-start justify-center bg-white/55 px-4 pt-10 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-lg border border-current/15 bg-white p-5 shadow-lg">
-        <div className="flex items-start gap-3">
-          <div
-            aria-hidden="true"
-            className="mt-1 h-7 w-7 shrink-0 animate-spin rounded-full border-2 border-current/20 border-t-current"
-          />
-          <div className="space-y-2">
-            <h2 className="text-base font-medium">{title}</h2>
-            <p className="text-sm opacity-70">{detail}</p>
-            <p className="text-xs opacity-60">Transport: {transport}</p>
-            {isRunning && totalTasks > 0 ? (
-              <p className="text-xs opacity-60">
-                Tasks: {doneTasks} / {totalTasks} complete
-              </p>
-            ) : null}
-          </div>
-        </div>
-
-        <ol className="mt-5 space-y-2 text-sm">
-          {steps.map((step, idx) => (
-            <li key={step.label} className="flex items-center gap-3">
-              <span
-                className={`grid h-6 w-6 shrink-0 place-items-center rounded-full border text-xs ${
-                  step.status === 'done'
-                    ? 'border-emerald-500 bg-emerald-500 text-white'
-                    : step.status === 'active'
-                      ? 'border-current bg-current text-white'
-                      : 'border-current/20 opacity-60'
-                }`}
-              >
-                {idx + 1}
-              </span>
-              <span
-                className={
-                  step.status === 'active'
-                    ? 'font-medium'
-                    : step.status === 'done'
-                      ? 'opacity-80'
-                      : 'opacity-50'
-                }
-              >
-                {step.label}
-              </span>
-            </li>
-          ))}
-        </ol>
-
-        <p className="mt-5 text-xs opacity-60">
-          This can take a little while with local models. The page will update automatically when the plan is ready.
-        </p>
-      </div>
-    </div>
   );
 }

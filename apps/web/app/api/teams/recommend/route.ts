@@ -7,13 +7,8 @@ import {
   resolveModelHints,
   type ResolvedTeamProposal,
 } from '@lib/agents/team';
-import { PoAuthError, PoSchemaError, ProviderUnavailableError } from '@lib/agents/po';
-import {
-  ModelDisabledError,
-  UnknownProviderError,
-  listEnabledModels,
-} from '@lib/models/catalog';
-import { GenerateAbortedError, GenerateTimeoutError } from '@lib/qa/timeout';
+import { poErrorResponse } from '@lib/agents/poErrorResponse';
+import { listEnabledModels } from '@lib/models/catalog';
 import { buildHistoryLines, loadSession } from '@lib/qa/sessionState';
 import { recall, type RecalledTeamSummary } from '@lib/search/teamSearch';
 
@@ -97,7 +92,7 @@ export async function POST(request: Request) {
     });
     proposal = resolveModelHints(raw, enabled, run.poModelId);
   } catch (err) {
-    return mapPoError(err);
+    return poErrorResponse(err, 'team_recommend_failed');
   }
 
   return NextResponse.json({
@@ -105,52 +100,4 @@ export async function POST(request: Request) {
     proposal,
     modelCatalog: catalogForClient,
   });
-}
-
-function mapPoError(err: unknown) {
-  if (err instanceof GenerateAbortedError) {
-    return NextResponse.json({ error: 'aborted' }, { status: 499 });
-  }
-  if (err instanceof GenerateTimeoutError) {
-    return NextResponse.json(
-      {
-        error: 'timeout',
-        timeoutMs: err.timeoutMs,
-        provider: err.provider,
-        modelId: err.modelId,
-      },
-      { status: 504 },
-    );
-  }
-  if (err instanceof ProviderUnavailableError) {
-    return NextResponse.json(
-      { error: 'provider_unavailable', provider: err.provider, reason: err.reason },
-      { status: 503 },
-    );
-  }
-  if (err instanceof PoAuthError) {
-    return NextResponse.json(
-      { error: 'provider_auth_failed', provider: err.provider, status: err.status },
-      { status: 401 },
-    );
-  }
-  if (err instanceof PoSchemaError) {
-    return NextResponse.json({ error: 'po_schema_error' }, { status: 502 });
-  }
-  if (err instanceof UnknownProviderError) {
-    return NextResponse.json(
-      { error: 'unknown_provider', provider: err.provider },
-      { status: 500 },
-    );
-  }
-  if (err instanceof ModelDisabledError) {
-    return NextResponse.json(
-      { error: 'model_disabled', modelId: err.modelId },
-      { status: 409 },
-    );
-  }
-  return NextResponse.json(
-    { error: 'team_recommend_failed', message: err instanceof Error ? err.message : String(err) },
-    { status: 500 },
-  );
 }

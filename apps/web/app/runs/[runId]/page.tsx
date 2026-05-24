@@ -30,6 +30,7 @@ export default async function RunDetailPage({ params }: PageProps) {
       status: true,
       prompt: true,
       failedReason: true,
+      startedAt: true,
       team: {
         select: {
           id: true,
@@ -147,6 +148,7 @@ export default async function RunDetailPage({ params }: PageProps) {
         initial={{
           status: run.status,
           failedReason: run.failedReason,
+          startedAt: run.startedAt?.toISOString() ?? null,
           team: {
             id: run.team.id,
             name: run.team.name,

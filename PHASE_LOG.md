@@ -39,6 +39,7 @@ Update this file at the end of each Phase.
 - Q&A auto-judge / progress / recovery correction applied on 2026-05-24: PO Q&A no longer blocks on provider availability preflight before generation, final-question progress displays the real final count, and process-restart recovery only sweeps stale planning/running Runs instead of freshly started Runs.
 - Phase 6 (Reuse / History / Resume / Retry UX) implemented and verified locally on 2026-05-24 on branch `phase-6-reuse-history-ux`. No schema change, no migration, no new dependencies. typecheck clean; 116 / 116 tests; `next build` 26 routes (4 new: `/runs`, `/teams`, `/teams/[teamId]`, `/api/runs/[runId]/retry`); prisma migrate status clean. Plan in `PHASE6_PLAN.md`. Not yet committed/pushed (user handles git).
 - Phase 6 browser smoke + Team Library search correction completed on 2026-05-24. `/runs`, `/teams`, `/teams/[teamId]`, feedback revisit, and failed-run recovery panels were checked in the in-app browser. Team search now filters non-matching queries instead of only re-ranking all teams. typecheck clean; 119 / 119 tests; `next build` 26 routes; prisma migrate status clean.
+- Phase 7 (Run Control & Provider Stability) implemented and verified locally on 2026-05-25 on branch `phase-7-run-control`. Adds run cancel (`POST /api/runs/[runId]/cancel`), a unified provider-error classifier shared by po/lead/team/leadRevise/worker (adds rate_limit + model_not_found), and richer long-run progress UX (elapsed time, last-event age, transport, in-overlay Cancel). No schema migration, no new dependency. typecheck clean; 134 / 134 tests; `next build` 27 routes (1 new: `/api/runs/[runId]/cancel`); prisma migrate status clean. Plan in `PHASE7_PLAN.md`. Browser smoke checked cancel guards, model-recovery reset, Start -> planning overlay, Cancel -> `failed(user_cancelled)` + `run.cancelled`, and Retry -> `ready`; state-refresh polish keeps the server header and client panel in sync after Start/Cancel/Retry/model-reset. Provider-specific auth/timeout/rate-limit panels are still worth spot-checking when convenient. Not yet committed/pushed (user handles git).
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
   - Phase 4 manual smoke (real Lead plan + agent execution + SSE) not yet exercised — first task on the next session before any merge to `main`.
@@ -96,6 +97,66 @@ Status: Implemented and verified locally. Branch `phase-6-reuse-history-ux`. Pla
 ### Deferred (Phase 7+)
 
 - Revision rollback, resume-from-failed-task, embedding recall, AgentRating dashboards, project management UI, team archive/delete and direct (non-revision) team editing.
+
+## Phase 7 — Run Control & Provider Stability (2026-05-25)
+
+Status: Implemented and verified locally. Branch `phase-7-run-control`. Plan: `PHASE7_PLAN.md`.
+
+### Approved scope (decisions)
+
+1. Cancel representation: `Run.status='failed'` + `failedReason='user_cancelled'` (so the existing retry / recovery / terminal checks need no changes); a `run.cancelled` RunEvent preserves the audit trail and `endedAt` is the cancel time. The UI distinguishes it via `failureClass` category `cancelled` (neutral copy, not red).
+2. On cancel, running + pending tasks → `status='cancelled'` (error `user_cancelled`, completedAt now); done/failed tasks preserved. `DagGraph` gained a `cancelled` style.
+3. Cancel mechanism: per-run `AbortController` registry in `runRegistry`; `/start` registers + passes the signal, `/cancel` aborts it, and `cancel.ts` is the single writer of the cancelled terminal state. The executor's `signal.aborted` guards stop it without overwriting `user_cancelled` with `task_failed:*` / `lead_plan_aborted`.
+4. Shared error modules under `lib/agents/` (`providerError.ts` classifier + `poErrorResponse.ts` route mapper). Error classes stay in `po.ts` (re-used, not moved).
+5. resume-from-failed-task deferred to Phase 8; strict-repair stays one attempt; rate_limit auto-backoff not introduced (classify + surface only).
+
+### Scope adjustment (reported during implementation)
+
+- The plan listed 4 routes for `mapPoError` consolidation. Only 3 share an identical contract (`qa/[sessionId]/next`, `qa/[sessionId]/answer`, `teams/recommend`) and now use the shared `poErrorPayload`. The revision route was intentionally left on its own mapper because it has a different contract (e.g. aborted → 408, provider auth → 502) plus revision-specific errors; it received only additive `rate_limit` / `model_not_found` cases so its public contract is unchanged.
+
+### New files
+
+- `src/lib/agents/providerError.ts` (+ test) — pure classifier: `extractProviderErrorStatus`, `looksLikeRateLimit/ModelNotFound/SchemaError`, `classifyGenerateError` (abort/timeout/auth/rate_limit/model_not_found/schema/provider_unavailable).
+- `src/lib/agents/poErrorResponse.ts` (+ test) — `poErrorPayload` (pure) + `poErrorResponse` (standard `Response`); shared route mapping for the 3 generation routes.
+- `src/lib/runs/cancelState.ts` (+ test) — pure cancel policy (`canCancel`, `cancelTransition`).
+- `src/lib/runs/cancel.ts` — Prisma + registry wiring: guard → abort → terminal write → task cancel → `run.cancelled` event.
+- `app/api/runs/[runId]/cancel/route.ts` — thin cancel route.
+- `src/components/run/CancelRunButton.tsx` — two-step confirm cancel (client).
+- `src/components/run/RunProgressOverlay.tsx` — extracted from `RunStream` + elapsed time, last-event age, transport, provider hint, in-overlay Cancel.
+
+### Modified files
+
+- `src/lib/agents/po.ts` — added `RateLimitError` / `ModelNotFoundError` classes + `raiseProviderError` (single throw-mapper); `callGenerate` catch simplified.
+- `src/lib/agents/{lead,team,leadRevise,worker}.ts` — replaced duplicated catch + helpers with `raiseProviderError`. The worker now distinguishes timeout/schema/abort/rate_limit/model_not_found/auth instead of collapsing everything to provider_unavailable.
+- `src/lib/dag/executor.ts` — `mapPlanErrorReason` adds `lead_plan_rate_limit:*` / `lead_plan_model_not_found:*`; `signal.aborted` guards at plan catch, post-plan, pre-running, loop-top, task catch, and pre-succeeded so cancel is never overwritten.
+- `src/lib/dag/runRegistry.ts` — added `registerRunController` / `getRunController` / `abortRun` / `clearRunController`.
+- `src/lib/runs/failureClass.ts` — added `cancelled` (user_cancelled), `rate_limit`, `model_not_found` categories + copy.
+- `app/api/runs/[runId]/start/route.ts` — register/clear AbortController + pass signal to `executeRun`.
+- `app/api/qa/[sessionId]/{next,answer}/route.ts`, `app/api/teams/recommend/route.ts` — local `mapPoError` → shared `poErrorPayload`.
+- `app/api/runs/[runId]/revision/route.ts` — additive `rate_limit` / `model_not_found` cases (own mapper preserved).
+- `app/api/runs/[runId]/team-models/route.ts` — `canResetFailedRun` also covers `lead_plan_model_not_found:*`.
+- `src/components/run/RunStream.tsx` — uses extracted overlay; handles `run.cancelled` (event + reducer); cancel wiring; `model_not_found` recovery panel/copy.
+- `src/components/run/DagGraph.tsx` — `cancelled` task style.
+- `app/runs/[runId]/page.tsx` — passes `startedAt` to `RunStream`.
+- `apps/web/package.json` — registered `providerError.test.ts`, `poErrorResponse.test.ts`, `cancelState.test.ts`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 134 / 134.
+- `next build` — PASS, 27 routes (1 new: `/api/runs/[runId]/cancel`).
+- `prisma migrate status` — PASS, 3 migrations, schema clean (no migration added).
+- Live smoke against the dev server (no provider cost): `POST /api/runs/<bad>/cancel` → 404 `run_not_found`; `POST /api/runs/<succeeded>/cancel` → 409 `run_not_cancellable`; `/runs`, `/teams`, and run detail (succeeded + failed) pages → 200 (Phase 6 + RunStream refactor no-regression).
+
+- Interactive browser smoke (Ollama-backed ready run): model-recovery panel reset a failed Lead-planning run to `ready`; Start showed the Phase 7 progress overlay with elapsed time, transport, last-event age, local-provider hint, and Cancel; Confirm cancel wrote `Run.status='failed'`, `failedReason='user_cancelled'`, `endedAt`, and a `run.cancelled` event; Retry reset the no-plan cancelled run back to `ready`. A smoke correction reloads the run detail after Start / Cancel / Retry / model-reset so the server-rendered sticky header and client panel stay in sync.
+
+### Pending (manual, interactive)
+
+- Provider-backed smoke: start a real run, Cancel during planning/running → `failed(user_cancelled)` + `run.cancelled` + tasks `cancelled` + neutral copy; retry a cancelled run (reset vs clone); provider auth → Settings hint; Ollama timeout copy; Gemini schema_error after one repair; rate_limit / model_not_found panels.
+
+### Deferred (Phase 8+)
+
+- resume-from-failed-task, rate_limit auto-backoff, concurrency > 1 / worker extraction.
 
 ## Compose Already-Team Revisit Correction (2026-05-24)
 

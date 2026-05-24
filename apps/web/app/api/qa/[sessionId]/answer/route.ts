@@ -2,14 +2,9 @@ import { NextResponse } from 'next/server';
 
 import { prisma } from '@db/client';
 
-import {
-  judgeAnswer,
-  PoAuthError,
-  PoSchemaError,
-  ProviderUnavailableError,
-} from '@lib/agents/po';
+import { judgeAnswer } from '@lib/agents/po';
+import { poErrorResponse } from '@lib/agents/poErrorResponse';
 import { stringifyJson } from '@lib/db/json';
-import { ModelDisabledError, UnknownProviderError } from '@lib/models/catalog';
 import { buildHistoryLines, loadSession, shouldAutoComplete } from '@lib/qa/sessionState';
 import {
   coerceSkipToAutoJudge,
@@ -17,7 +12,6 @@ import {
   isAnswerable,
   valueForChoice,
 } from '@lib/qa/skipPolicy';
-import { GenerateAbortedError, GenerateTimeoutError } from '@lib/qa/timeout';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -108,7 +102,7 @@ export async function POST(
       value = { chosenValue, rationale: judged.rationale };
       isAutoJudged = true;
     } catch (err) {
-      return mapPoError(err);
+      return poErrorResponse(err, 'po_failed');
     }
   } else {
     try {
@@ -176,49 +170,4 @@ export async function POST(
     isAutoJudged,
     session: final,
   });
-}
-
-function mapPoError(err: unknown) {
-  if (err instanceof GenerateAbortedError) {
-    return NextResponse.json({ error: 'aborted' }, { status: 499 });
-  }
-  if (err instanceof GenerateTimeoutError) {
-    return NextResponse.json(
-      {
-        error: 'timeout',
-        timeoutMs: err.timeoutMs,
-        provider: err.provider,
-        modelId: err.modelId,
-      },
-      { status: 504 },
-    );
-  }
-  if (err instanceof ProviderUnavailableError) {
-    return NextResponse.json(
-      { error: 'provider_unavailable', provider: err.provider, reason: err.reason },
-      { status: 503 },
-    );
-  }
-  if (err instanceof PoAuthError) {
-    return NextResponse.json(
-      { error: 'provider_auth_failed', provider: err.provider, status: err.status },
-      { status: 401 },
-    );
-  }
-  if (err instanceof PoSchemaError) {
-    return NextResponse.json({ error: 'po_schema_error' }, { status: 502 });
-  }
-  if (err instanceof UnknownProviderError) {
-    return NextResponse.json(
-      { error: 'unknown_provider', provider: err.provider },
-      { status: 500 },
-    );
-  }
-  if (err instanceof ModelDisabledError) {
-    return NextResponse.json({ error: 'model_disabled' }, { status: 409 });
-  }
-  return NextResponse.json(
-    { error: 'po_failed', message: err instanceof Error ? err.message : String(err) },
-    { status: 500 },
-  );
 }
