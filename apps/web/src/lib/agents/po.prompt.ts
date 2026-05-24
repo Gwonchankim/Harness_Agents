@@ -12,7 +12,7 @@ const choiceSchema = z.object({
 
 export const nextQuestionSchema = z.object({
   prompt: z.string().min(1).max(400),
-  kind: z.enum(['single', 'multi', 'free']),
+  kind: z.literal('single'),
   choices: z.array(choiceSchema).length(4),
   isFinal: z.boolean(),
 });
@@ -35,6 +35,8 @@ export interface PoPromptInput {
   /** When regenerating a stale question, the prior question is included so the
    *  PO can avoid asking the same thing in a different order. */
   regeneratingOrder?: number;
+  /** Append strict repair guidance after a malformed structured response. */
+  strict?: boolean;
 }
 
 const SYSTEM_NEXT_QUESTION = `You are the Product-Owner Agent for the Harness Agents app.
@@ -52,6 +54,21 @@ const SYSTEM_JUDGE = `You are the Product-Owner Agent's auto-judge.
 You must choose ONE of the four substantive choices that is most consistent with
 the user's original prompt and prior answers. Provide a short rationale (<=240 chars)
 that the user could read at a glance.`;
+
+const STRICT_NEXT_QUESTION_SUFFIX = `STRICT REPAIR MODE — your previous response did NOT match the required schema. Follow these rules exactly:
+- Return ONLY the structured object. Do not include markdown, commentary, or code fences.
+- Required fields: prompt, kind, choices, isFinal.
+- kind must be exactly "single".
+- choices must contain exactly 4 objects.
+- Each choice object must have label and value, both strings.
+- isFinal must be a boolean true or false, not a string.
+- Do not include positions 5 or 6; the server adds AI auto-judge and custom answer.`;
+
+const STRICT_JUDGE_SUFFIX = `STRICT REPAIR MODE — your previous response did NOT match the required schema. Follow these rules exactly:
+- Return ONLY the structured object. Do not include markdown, commentary, or code fences.
+- Required fields: choiceIndex, rationale.
+- choiceIndex must be the number 1, 2, 3, or 4.
+- rationale must be a short string under 240 characters.`;
 
 export function buildNextQuestionMessages(input: PoPromptInput) {
   const finalGate =
@@ -74,9 +91,15 @@ export function buildNextQuestionMessages(input: PoPromptInput) {
       `NOTE: This is a regeneration of question ${input.regeneratingOrder} after an upstream answer change. Ask a fresh, useful question that fits the new context.`,
     );
   }
+  if (input.strict) {
+    lines.push('', STRICT_NEXT_QUESTION_SUFFIX);
+  }
+  const systemContent = input.strict
+    ? `${SYSTEM_NEXT_QUESTION}\n\n${STRICT_NEXT_QUESTION_SUFFIX}`
+    : SYSTEM_NEXT_QUESTION;
 
   return [
-    { role: 'system' as const, content: SYSTEM_NEXT_QUESTION },
+    { role: 'system' as const, content: systemContent },
     { role: 'user' as const, content: lines.join('\n') },
   ];
 }
@@ -88,6 +111,8 @@ export interface JudgePromptInput {
     prompt: string;
     choices: Array<{ label: string; value: unknown }>;
   };
+  /** Append strict repair guidance after a malformed structured response. */
+  strict?: boolean;
 }
 
 export function buildJudgeMessages(input: JudgePromptInput) {
@@ -104,8 +129,14 @@ export function buildJudgeMessages(input: JudgePromptInput) {
     'Choices:',
     choices,
   ];
+  if (input.strict) {
+    lines.push('', STRICT_JUDGE_SUFFIX);
+  }
+  const systemContent = input.strict
+    ? `${SYSTEM_JUDGE}\n\n${STRICT_JUDGE_SUFFIX}`
+    : SYSTEM_JUDGE;
   return [
-    { role: 'system' as const, content: SYSTEM_JUDGE },
+    { role: 'system' as const, content: systemContent },
     { role: 'user' as const, content: lines.join('\n') },
   ];
 }

@@ -8,14 +8,17 @@
 // Skip ⇒ auto-judge (option 5).
 
 export type ChoiceIndex = 1 | 2 | 3 | 4 | 5 | 6;
+export type SubstantiveChoiceIndex = 1 | 2 | 3 | 4;
 
 export interface NormalizedAnswerInput {
-  choiceIndex: ChoiceIndex;
+  choiceIndex: ChoiceIndex | null;
+  choiceIndices?: SubstantiveChoiceIndex[];
   customText?: string;
 }
 
 export interface RawAnswerInput {
   choiceIndex?: number;
+  choiceIndices?: number[];
   customText?: string;
   skip?: boolean;
 }
@@ -36,6 +39,29 @@ export class InvalidAnswerInputError extends Error {
 export function coerceSkipToAutoJudge(raw: RawAnswerInput): NormalizedAnswerInput {
   if (raw.skip) {
     return { choiceIndex: 5 };
+  }
+  if (raw.choiceIndices != null) {
+    if (raw.choiceIndex != null) {
+      throw new InvalidAnswerInputError('choiceIndex and choiceIndices are mutually exclusive');
+    }
+    if (!Array.isArray(raw.choiceIndices) || raw.choiceIndices.length === 0) {
+      throw new InvalidAnswerInputError('choiceIndices must be a non-empty array');
+    }
+    const unique = [...new Set(raw.choiceIndices)];
+    if (unique.length !== raw.choiceIndices.length) {
+      throw new InvalidAnswerInputError('choiceIndices must not contain duplicates');
+    }
+    for (const idx of unique) {
+      if (!Number.isInteger(idx) || idx < 1 || idx > 4) {
+        throw new InvalidAnswerInputError(
+          `choiceIndices must contain only 1..4 (got ${idx})`,
+        );
+      }
+    }
+    return {
+      choiceIndex: null,
+      choiceIndices: unique as SubstantiveChoiceIndex[],
+    };
   }
   const idx = raw.choiceIndex;
   if (idx == null || !Number.isInteger(idx) || idx < 1 || idx > 6) {
@@ -69,12 +95,31 @@ export function valueForChoice(
   input: NormalizedAnswerInput,
   judged?: { chosenValue: unknown; rationale: string },
 ): unknown {
-  if (input.choiceIndex >= 1 && input.choiceIndex <= 4) {
+  if (
+    input.choiceIndex != null &&
+    input.choiceIndex >= 1 &&
+    input.choiceIndex <= 4
+  ) {
     const option = options[input.choiceIndex - 1];
     if (!option || option.kind !== 'choice') {
       throw new InvalidAnswerInputError(`option ${input.choiceIndex} is not a substantive choice`);
     }
     return option.value;
+  }
+  if (input.choiceIndices && input.choiceIndices.length > 0) {
+    return {
+      selectedValues: input.choiceIndices.map((idx) => {
+        const option = options[idx - 1];
+        if (!option || option.kind !== 'choice') {
+          throw new InvalidAnswerInputError(`option ${idx} is not a substantive choice`);
+        }
+        return {
+          choiceIndex: idx,
+          label: option.label,
+          value: option.value,
+        };
+      }),
+    };
   }
   if (input.choiceIndex === 5) {
     if (!judged) {

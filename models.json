@@ -64,6 +64,67 @@
       "supportsTools": true
     },
     {
+      "modelId": "gemini-3.1-flash-lite",
+      "displayName": "Gemini 3.1 Flash-Lite",
+      "provider": "google",
+      "endpointType": "google-generative-ai",
+      "costTier": "low",
+      "speedTier": "fast",
+      "recommendedUse": "Fast, cost-effective Gemini 3 model for lightweight PO checks, summaries, extraction, and high-volume agent work.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "supportsTools": true
+    },
+    {
+      "modelId": "gemini-3.5-flash",
+      "displayName": "Gemini 3.5 Flash",
+      "provider": "google",
+      "endpointType": "google-generative-ai",
+      "costTier": "standard",
+      "speedTier": "fast",
+      "recommendedUse": "Default Gemini 3 model for PO Q&A, team composition, Lead planning, coding loops, and agentic workflows.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "supportsTools": true,
+      "default": true
+    },
+    {
+      "modelId": "gemini-3.1-pro-preview",
+      "displayName": "Gemini 3.1 Pro Preview",
+      "provider": "google",
+      "endpointType": "google-generative-ai",
+      "costTier": "premium",
+      "speedTier": "standard",
+      "recommendedUse": "Preview Gemini 3 reasoning model for complex planning, code-heavy tasks, and reliable multi-step execution.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "supportsTools": true
+    },
+    {
+      "modelId": "gemini-2.5-flash",
+      "displayName": "Gemini 2.5 Flash",
+      "provider": "google",
+      "endpointType": "google-generative-ai",
+      "costTier": "standard",
+      "speedTier": "fast",
+      "recommendedUse": "Stable Gemini 2.5 fallback for PO Q&A, team composition, Lead planning, and high-volume agent work.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "supportsTools": true
+    },
+    {
+      "modelId": "gemini-2.5-flash-lite",
+      "displayName": "Gemini 2.5 Flash-Lite",
+      "provider": "google",
+      "endpointType": "google-generative-ai",
+      "costTier": "low",
+      "speedTier": "fast",
+      "recommendedUse": "Stable, budget-friendly Gemini 2.5 fallback for lightweight checks, summaries, and simple agent tasks.",
+      "contextWindow": 1048576,
+      "maxOutputTokens": 65536,
+      "supportsTools": true
+    },
+    {
       "modelId": "gemma4:e4b",
       "displayName": "Gemma 4 e4b (local)",
       "provider": "ollama",

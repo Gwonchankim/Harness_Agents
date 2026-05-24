@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation';
 import { prisma } from '@db/client';
 
 import { QaFlow } from '@/components/qa/QaFlow';
+import { RunContextHeader } from '@/components/run/RunContextHeader';
 
 import { resolveProviderName } from '@lib/models/catalog';
 import { loadSession } from '@lib/qa/sessionState';
@@ -23,9 +24,9 @@ export default async function QaSessionPage({
   // one we recognise, the hint is simply hidden.
   const run = await prisma.run.findUnique({
     where: { id: session.runId },
-    select: { poModelId: true },
+    select: { poModelId: true, prompt: true, status: true },
   });
-  let poProvider: 'openai' | 'anthropic' | 'ollama' | null = null;
+  let poProvider: 'openai' | 'anthropic' | 'google' | 'ollama' | null = null;
   if (run?.poModelId) {
     const model = await prisma.modelCatalog.findUnique({
       where: { modelId: run.poModelId },
@@ -36,6 +37,11 @@ export default async function QaSessionPage({
 
   return (
     <section className="space-y-6">
+      <RunContextHeader
+        title={`Run ${session.runId.slice(0, 12)}...`}
+        prompt={run?.prompt ?? ''}
+        status={run?.status ?? session.status}
+      />
       <div className="space-y-2">
         <h1 className="text-2xl font-semibold tracking-tight">PO Q&A</h1>
         <p className="text-sm opacity-70">

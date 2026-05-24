@@ -1,4 +1,5 @@
 import { anthropicAdapter, buildAnthropicModel } from './anthropic';
+import { googleAdapter, buildGoogleModel } from './google';
 import { ollamaAdapter, buildOllamaModel } from './ollama';
 import { openaiAdapter, buildOpenAiModel } from './openai';
 
@@ -9,6 +10,7 @@ export type { ProviderAdapter, ProviderName, AvailabilityResult } from './types'
 const ADAPTERS: Record<ProviderName, ProviderAdapter> = {
   openai: openaiAdapter,
   anthropic: anthropicAdapter,
+  google: googleAdapter,
   ollama: ollamaAdapter,
 };
 
@@ -24,7 +26,7 @@ export function listProviders(): readonly ProviderAdapter[] {
 }
 
 export function isProviderName(name: string): name is ProviderName {
-  return name === 'openai' || name === 'anthropic' || name === 'ollama';
+  return name === 'openai' || name === 'anthropic' || name === 'google' || name === 'ollama';
 }
 
 /** Build a language-model handle, picking up DB-stored secrets at call time. */
@@ -34,6 +36,8 @@ export async function buildModel(provider: ProviderName, modelId: string) {
       return buildOpenAiModel(modelId);
     case 'anthropic':
       return buildAnthropicModel(modelId);
+    case 'google':
+      return buildGoogleModel(modelId);
     case 'ollama':
       return buildOllamaModel(modelId);
   }

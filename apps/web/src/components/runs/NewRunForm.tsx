@@ -15,7 +15,7 @@ interface Props {
   models: ModelOption[];
 }
 
-type ProviderKey = 'openai' | 'anthropic' | 'ollama';
+type ProviderKey = 'openai' | 'anthropic' | 'google' | 'ollama';
 
 interface ProviderTab {
   key: ProviderKey;
@@ -25,11 +25,12 @@ interface ProviderTab {
 const PROVIDER_TABS: readonly ProviderTab[] = [
   { key: 'openai', label: 'OpenAI' },
   { key: 'anthropic', label: 'Anthropic' },
+  { key: 'google', label: 'Google' },
   { key: 'ollama', label: 'Local' },
 ];
 
 function isProviderKey(value: string): value is ProviderKey {
-  return value === 'openai' || value === 'anthropic' || value === 'ollama';
+  return value === 'openai' || value === 'anthropic' || value === 'google' || value === 'ollama';
 }
 
 function pickProviderModelId(provider: ProviderKey, models: readonly ModelOption[]): string {
@@ -61,6 +62,7 @@ export function NewRunForm({ models }: Props) {
     const map: Record<ProviderKey, ModelOption[]> = {
       openai: [],
       anthropic: [],
+      google: [],
       ollama: [],
     };
     for (const m of models) {

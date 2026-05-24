@@ -37,9 +37,10 @@ export async function POST(
   if (typeof body !== 'object' || body === null) {
     return NextResponse.json({ error: 'invalid_body' }, { status: 400 });
   }
-  const { questionId, choiceIndex, customText, skip } = body as {
+  const { questionId, choiceIndex, choiceIndices, customText, skip } = body as {
     questionId?: unknown;
     choiceIndex?: unknown;
+    choiceIndices?: unknown;
     customText?: unknown;
     skip?: unknown;
   };
@@ -51,6 +52,9 @@ export async function POST(
   try {
     normalized = coerceSkipToAutoJudge({
       choiceIndex: typeof choiceIndex === 'number' ? choiceIndex : undefined,
+      choiceIndices: Array.isArray(choiceIndices)
+        ? choiceIndices.map((idx) => (typeof idx === 'number' ? idx : Number.NaN))
+        : undefined,
       customText: typeof customText === 'string' ? customText : undefined,
       skip: skip === true,
     });

@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useReducer } from 'react';
+import { useCallback, useEffect, useReducer, useRef } from 'react';
 
 import type { SessionView } from '@lib/qa/sessionState';
 
@@ -11,7 +11,7 @@ import { Timeline } from './Timeline';
 interface Props {
   initial: SessionView;
   /** Provider of the Run's poModelId. Used to show a local-models latency hint. */
-  poProvider?: 'openai' | 'anthropic' | 'ollama' | null;
+  poProvider?: 'openai' | 'anthropic' | 'google' | 'ollama' | null;
 }
 
 /**
@@ -50,6 +50,12 @@ function reducer(state: State, action: Action): State {
       // An error always ends the in-flight operation. Clearing both in one
       // action prevents an interim render with pendingOperation still set
       // alongside an error banner.
+      if (
+        action.error === GENERIC_SERVER_STEP_ERROR &&
+        state.view.currentQuestion != null
+      ) {
+        return { ...state, error: null, pendingOperation: null };
+      }
       return { ...state, error: action.error, pendingOperation: null };
     case 'BEGIN_EDIT':
       return { ...state, editingQuestionId: action.questionId };
@@ -58,8 +64,12 @@ function reducer(state: State, action: Action): State {
   }
 }
 
+const GENERIC_SERVER_STEP_ERROR =
+  'The server hit an error while processing this step. Refresh to load the latest saved state, then retry.';
+
 export function QaFlow({ initial, poProvider = null }: Props) {
   const router = useRouter();
+  const nextRequestInFlight = useRef(false);
   const [state, dispatch] = useReducer(reducer, {
     view: initial,
     pendingOperation: null,
@@ -82,6 +92,8 @@ export function QaFlow({ initial, poProvider = null }: Props) {
   // to keep this auto-advance loop safe.
   const sessionId = state.view.sessionId;
   const requestNext = useCallback(async () => {
+    if (nextRequestInFlight.current) return;
+    nextRequestInFlight.current = true;
     dispatch({ type: 'SET_ERROR', error: null });
     dispatch({ type: 'SET_PENDING_OPERATION', operation: 'next' });
     try {
@@ -105,11 +117,14 @@ export function QaFlow({ initial, poProvider = null }: Props) {
         });
         return;
       }
-      // Reload the page-level snapshot via location refresh-equivalent: just
-      // re-issue the next call (idempotent) so we get the updated question.
-      // This avoids a separate GET endpoint in the MVP.
-      location.reload();
+      const data = (await res.json()) as NextQuestionResponse;
+      if (data.session) {
+        dispatch({ type: 'SET_VIEW', view: data.session });
+      } else {
+        location.reload();
+      }
     } finally {
+      nextRequestInFlight.current = false;
       dispatch({ type: 'SET_PENDING_OPERATION', operation: null });
     }
   }, [sessionId]);
@@ -154,7 +169,12 @@ export function QaFlow({ initial, poProvider = null }: Props) {
         dispatch({ type: 'SET_ERROR', error: formatErrorMessage(data, res.status) });
         return;
       }
-      location.reload();
+      const data = (await res.json()) as NextQuestionResponse;
+      if (data.session) {
+        dispatch({ type: 'SET_VIEW', view: data.session });
+      } else {
+        location.reload();
+      }
     } finally {
       dispatch({ type: 'SET_PENDING_OPERATION', operation: null });
     }
@@ -163,6 +183,7 @@ export function QaFlow({ initial, poProvider = null }: Props) {
   async function submit(input: {
     questionId: string;
     choiceIndex?: number;
+    choiceIndices?: number[];
     customText?: string;
     skip?: boolean;
   }) {
@@ -217,9 +238,25 @@ export function QaFlow({ initial, poProvider = null }: Props) {
     !stalePending &&
     state.editingQuestionId == null;
   const interactionLocked = state.pendingOperation != null || isWaitingForNextQuestion;
+  const showLoadingOverlay =
+    interactionLocked && !state.error && !state.view.isComplete;
+  const loadingState = getLoadingState({
+    pendingOperation: state.pendingOperation,
+    isWaitingForNextQuestion,
+    maxAnsweredOrder: state.view.maxAnsweredOrder,
+    maxQuestions: 6,
+    provider: poProvider,
+  });
 
   return (
-    <div className="space-y-8">
+    <div className="relative">
+      <div
+        className={
+          showLoadingOverlay
+            ? 'pointer-events-none select-none space-y-8 opacity-45 blur-[2px] transition'
+            : 'space-y-8 transition'
+        }
+      >
       <div className="space-y-2">
         <div className="flex items-center justify-between text-xs opacity-70">
           <span>
@@ -278,6 +315,8 @@ export function QaFlow({ initial, poProvider = null }: Props) {
           onRegenerate={regenerate}
         />
       </div>
+      </div>
+      {showLoadingOverlay ? <LoadingOverlay state={loadingState} /> : null}
     </div>
   );
 }
@@ -302,6 +341,89 @@ function statusLabel(state: State, isWaitingForNextQuestion: boolean): string {
   }
   if (isWaitingForNextQuestion) return 'Generating next question…';
   return 'Active';
+}
+
+interface LoadingState {
+  title: string;
+  detail: string;
+  activeStep: number;
+  steps: string[];
+}
+
+function getLoadingState(input: {
+  pendingOperation: PendingOperation | null;
+  isWaitingForNextQuestion: boolean;
+  maxAnsweredOrder: number;
+  maxQuestions: number;
+  provider: Props['poProvider'];
+}): LoadingState {
+  const nextQuestion = Math.min(input.maxAnsweredOrder + 1, input.maxQuestions);
+  const providerHint =
+    input.provider === 'google'
+      ? 'Gemini is drafting the next question and validating the structured response.'
+      : input.provider === 'ollama'
+        ? 'Local models can take longer while drafting and validating the structured response.'
+        : 'The PO model is drafting the next question and validating the structured response.';
+
+  if (input.pendingOperation === 'answer') {
+    return {
+      title: 'Saving your answer',
+      detail: 'After this is saved, the PO model will generate the next question.',
+      activeStep: 0,
+      steps: ['Save answer', 'Ask PO model', 'Validate next question'],
+    };
+  }
+  if (input.pendingOperation === 'regenerate') {
+    return {
+      title: 'Regenerating question',
+      detail: providerHint,
+      activeStep: 1,
+      steps: ['Read updated context', 'Ask PO model', 'Validate regenerated question'],
+    };
+  }
+  return {
+    title: `Generating question ${nextQuestion} of ${input.maxQuestions}`,
+    detail: providerHint,
+    activeStep: input.isWaitingForNextQuestion ? 1 : 1,
+    steps: ['Prepare context', 'Ask PO model', 'Validate structured response'],
+  };
+}
+
+function LoadingOverlay({ state }: { state: LoadingState }) {
+  return (
+    <div className="absolute inset-x-0 top-16 z-20 flex justify-center px-4">
+      <div className="w-full max-w-xl rounded-lg border border-current/15 bg-white/95 p-5 text-sm shadow-lg backdrop-blur-md dark:bg-neutral-950/95">
+        <div className="flex items-start gap-3">
+          <span className="mt-1 h-3 w-3 shrink-0 animate-pulse rounded-full bg-current" />
+          <div className="space-y-1">
+            <p className="font-medium">{state.title}</p>
+            <p className="text-xs opacity-70">{state.detail}</p>
+          </div>
+        </div>
+        <div className="mt-4 h-1 overflow-hidden rounded-full bg-current/10">
+          <div className="h-full w-2/3 animate-pulse rounded-full bg-current/40" />
+        </div>
+        <ol className="mt-4 grid gap-2 text-xs sm:grid-cols-3">
+          {state.steps.map((step, index) => (
+            <li
+              key={step}
+              className={
+                index === state.activeStep
+                  ? 'rounded-md border border-current/25 bg-current/5 px-2 py-1 font-medium'
+                  : 'rounded-md border border-current/10 px-2 py-1 opacity-60'
+              }
+            >
+              {index + 1}. {step}
+            </li>
+          ))}
+        </ol>
+      </div>
+    </div>
+  );
+}
+
+interface NextQuestionResponse {
+  session?: SessionView;
 }
 
 interface ApiErrorBody {
@@ -334,6 +456,9 @@ function formatErrorMessage(data: ApiErrorBody, status: number): string {
   }
   if (data.error === 'po_schema_error') {
     return 'The model returned a malformed response. Retry, or pick a stronger model.';
+  }
+  if (status >= 500) {
+    return GENERIC_SERVER_STEP_ERROR;
   }
   if (data.error) return data.error;
   return `HTTP ${status}`;

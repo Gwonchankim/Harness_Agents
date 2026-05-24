@@ -3,7 +3,7 @@
 
 import type { LanguageModelV1 } from 'ai';
 
-export type ProviderName = 'openai' | 'anthropic' | 'ollama';
+export type ProviderName = 'openai' | 'anthropic' | 'google' | 'ollama';
 
 export interface ProviderAdapter {
   readonly name: ProviderName;

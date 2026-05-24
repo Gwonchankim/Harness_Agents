@@ -58,9 +58,19 @@ Hard rules:
 - systemPrompt is concise and operational (<=2000 chars). Speak in second person to the agent.
 - Return ONLY the structured shape requested.`;
 
+const STRICT_REPAIR_SUFFIX = `STRICT REPAIR MODE — your previous response did NOT match the required schema. Follow these rules without exception:
+- Return ONLY the structured object. Do not include markdown or commentary.
+- Output exactly ${TEAM_AGENT_COUNT} agents.
+- Output exactly one lead (one agent with isLead=true; all other agents must have isLead=false).
+- Use only allowed tools from this allowlist: ${ALLOWED_TOOL_NAMES.join(', ')}. Use an empty array if the agent needs none.
+- modelHint must be one of: 'fast', 'standard', 'premium', 'local'.
+- All required string fields must be non-empty.`;
+
 export interface TeamPromptInput {
   userPrompt: string;
   historyLines: string[];
+  /** When true, append strict-repair guidance — used for the automatic retry after a schema error. */
+  strict?: boolean;
 }
 
 export function buildTeamProposalMessages(input: TeamPromptInput) {
@@ -74,8 +84,14 @@ export function buildTeamProposalMessages(input: TeamPromptInput) {
     'Pick an appropriate domain label (1-2 words) and a small set of tags (<=5).',
     'Choose a modelHint per agent based on their role. Keep tool requests minimal.',
   ];
+  if (input.strict) {
+    lines.push('', STRICT_REPAIR_SUFFIX);
+  }
+  const systemContent = input.strict
+    ? `${SYSTEM_TEAM_PROPOSAL}\n\n${STRICT_REPAIR_SUFFIX}`
+    : SYSTEM_TEAM_PROPOSAL;
   return [
-    { role: 'system' as const, content: SYSTEM_TEAM_PROPOSAL },
+    { role: 'system' as const, content: systemContent },
     { role: 'user' as const, content: lines.join('\n') },
   ];
 }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import type { QaQuestionView } from '@lib/qa/sessionState';
 
@@ -10,6 +10,7 @@ interface Props {
   onSubmit: (input: {
     questionId: string;
     choiceIndex?: number;
+    choiceIndices?: number[];
     customText?: string;
     skip?: boolean;
   }) => void;
@@ -17,9 +18,36 @@ interface Props {
 
 export function QuestionCard({ question, busy, onSubmit }: Props) {
   const [customText, setCustomText] = useState('');
+  const [selectedChoices, setSelectedChoices] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const choices = question.options.filter((o) => o.kind === 'choice');
+
+  useEffect(() => {
+    setCustomText('');
+    setSelectedChoices([]);
+    setError(null);
+  }, [question.id]);
+
+  function toggleChoice(choiceIndex: number) {
+    if (busy) return;
+    setError(null);
+    setSelectedChoices((current) =>
+      current.includes(choiceIndex)
+        ? current.filter((idx) => idx !== choiceIndex)
+        : [...current, choiceIndex].sort((a, b) => a - b),
+    );
+  }
+
+  function submitSelected() {
+    if (busy) return;
+    setError(null);
+    if (selectedChoices.length === 0) {
+      setError('Select at least one option');
+      return;
+    }
+    onSubmit({ questionId: question.id, choiceIndices: selectedChoices });
+  }
 
   function pick(choiceIndex: number) {
     // Belt-and-braces: even when the disabled buttons should swallow the
@@ -46,20 +74,49 @@ export function QuestionCard({ question, busy, onSubmit }: Props) {
           {question.isFinal ? ' · final' : ''}
         </div>
         <h2 className="text-base font-medium">{question.prompt}</h2>
+        <p className="text-xs opacity-60">
+          Select one or more options, then submit. Auto-judge and custom answer are single-use alternatives.
+        </p>
       </div>
 
       <ul className="mt-4 space-y-2">
         {choices.map((option, idx) => {
           const i = idx + 1;
+          const selected = selectedChoices.includes(i);
           return (
             <li key={i}>
               <button
                 type="button"
                 disabled={busy}
-                onClick={() => pick(i)}
-                className="flex w-full items-start gap-3 rounded-md border border-current/15 px-3 py-2 text-left text-sm hover:bg-current/5 disabled:opacity-40"
+                aria-pressed={selected}
+                onClick={() => toggleChoice(i)}
+                className={`flex w-full items-start gap-3 rounded-md border px-3 py-2 text-left text-sm hover:bg-current/5 disabled:cursor-not-allowed disabled:opacity-40 ${
+                  selected
+                    ? 'border-current/45 bg-current/10'
+                    : 'border-current/15'
+                }`}
               >
-                <span className="rounded-full border border-current/20 px-2 py-0.5 text-xs">
+                <span
+                  aria-hidden="true"
+                  className={`mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded border transition-colors ${
+                    selected
+                      ? 'border-current bg-current'
+                      : 'border-current/30 bg-transparent'
+                  }`}
+                >
+                  <span
+                    className={`h-2.5 w-2.5 rounded-sm bg-white ${
+                      selected ? 'block' : 'hidden'
+                    }`}
+                  />
+                </span>
+                <span
+                  className={`rounded-full border px-2 py-0.5 text-xs transition-colors ${
+                    selected
+                      ? 'border-current bg-current text-white'
+                      : 'border-current/20'
+                  }`}
+                >
                   {i}
                 </span>
                 <span className="flex-1">{option.label}</span>
@@ -67,6 +124,16 @@ export function QuestionCard({ question, busy, onSubmit }: Props) {
             </li>
           );
         })}
+        <li>
+          <button
+            type="button"
+            disabled={busy || selectedChoices.length === 0}
+            onClick={submitSelected}
+            className="rounded-md border border-current/30 px-3 py-1.5 text-xs font-medium hover:bg-current/5 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Submit selected {selectedChoices.length > 0 ? `(${selectedChoices.length})` : ''}
+          </button>
+        </li>
         <li>
           <button
             type="button"

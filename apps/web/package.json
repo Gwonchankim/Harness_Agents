@@ -8,11 +8,12 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/lib/secrets/redactor.test.ts src/lib/workspace/paths.test.ts src/lib/workspace/exportService.test.ts src/lib/tools/policy.test.ts src/lib/qa/skipPolicy.test.ts src/lib/qa/sessionState.test.ts src/lib/team/serialize.test.ts src/lib/search/teamSearch.test.ts",
+    "test": "tsx --test src/lib/secrets/redactor.test.ts src/lib/workspace/paths.test.ts src/lib/workspace/exportService.test.ts src/lib/tools/policy.test.ts src/lib/qa/skipPolicy.test.ts src/lib/qa/sessionState.test.ts src/lib/team/serialize.test.ts src/lib/search/teamSearch.test.ts src/lib/dag/topo.test.ts src/lib/events/redactor.test.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^1.2.12",
+    "@ai-sdk/google": "^1.2.22",
     "@ai-sdk/openai": "^1.3.24",
     "@ai-sdk/openai-compatible": "^0.2.16",
     "@prisma/client": "^5.22.0",

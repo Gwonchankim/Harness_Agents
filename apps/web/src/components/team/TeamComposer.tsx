@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from 'react';
 
 import { ALLOWED_TOOL_NAMES } from '@lib/tools/policy';
 
+import { StartRunButton } from '@/components/run/StartRunButton';
+
 import { RevisionDiffViewer } from './RevisionDiffViewer';
 
 interface ModelCatalogClient {
@@ -33,7 +35,7 @@ interface RecalledTeamSummary {
   };
 }
 
-type ProviderKey = 'openai' | 'anthropic' | 'ollama';
+type ProviderKey = 'openai' | 'anthropic' | 'google' | 'ollama';
 
 interface ProposedAgent {
   name: string;
@@ -81,13 +83,22 @@ interface Props {
 const PROVIDER_TABS: readonly ProviderTab[] = [
   { key: 'openai', label: 'OpenAI' },
   { key: 'anthropic', label: 'Anthropic' },
+  { key: 'google', label: 'Google' },
   { key: 'ollama', label: 'Local' },
 ];
 
 const TOOL_OPTIONS = [...ALLOWED_TOOL_NAMES];
 
 function isProviderKey(value: string): value is ProviderKey {
-  return value === 'openai' || value === 'anthropic' || value === 'ollama';
+  return value === 'openai' || value === 'anthropic' || value === 'google' || value === 'ollama';
+}
+
+function formatRecommendError(code: string | null): string {
+  if (!code) return 'Could not load recommendations: unknown error';
+  if (code === 'po_schema_error') {
+    return 'The selected model returned an invalid team proposal. Retry, or use a stronger PO model for team composition.';
+  }
+  return `Could not load recommendations: ${code}`;
 }
 
 function pickProviderModelId(
@@ -145,6 +156,7 @@ export function TeamComposer({ sessionId }: Props) {
     const map: Record<ProviderKey, ModelCatalogClient[]> = {
       openai: [],
       anthropic: [],
+      google: [],
       ollama: [],
     };
     if (!data) return map;
@@ -293,7 +305,7 @@ export function TeamComposer({ sessionId }: Props) {
     return (
       <div className="space-y-3 text-sm">
         <p className="rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-rose-700 dark:text-rose-300">
-          Could not load recommendations: {error ?? 'unknown error'}
+          {formatRecommendError(error)}
         </p>
         <button
           type="button"
@@ -557,17 +569,20 @@ function SuccessPanel({ success }: { success: SuccessState }) {
       ) : null}
 
       <p className="text-xs opacity-70">
-        Run detail page lands in Phase 4 (DAG executor + SSE). Until then, the run sits in the
+        The run sits in the
         <code className="mx-1 rounded bg-current/10 px-1 py-0.5">ready</code>
-        state in the database.
+        state. Start the DAG executor directly from here.
       </p>
 
-      <Link
-        href="/"
-        className="inline-block rounded-md border border-current/30 px-3 py-1 text-xs font-medium hover:bg-current/5"
-      >
-        Back to home
-      </Link>
+      <div className="flex flex-wrap gap-2">
+        <StartRunButton runId={success.runId} />
+        <Link
+          href="/"
+          className="inline-block rounded-md border border-current/30 px-3 py-1 text-xs font-medium hover:bg-current/5"
+        >
+          Back to home
+        </Link>
+      </div>
     </div>
   );
 }
