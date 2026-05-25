@@ -1,6 +1,8 @@
 // Per-agent report builder (pure). Produces agent-reports/{agentId}.md content.
 // One file per agent that had at least one task in the run. No I/O here.
 
+import type { AttemptSummaryRow } from './attemptSummary';
+
 export interface AgentReportTaskInput {
   taskKey: string;
   title: string;
@@ -10,6 +12,8 @@ export interface AgentReportTaskInput {
   durationMs: number | null;
   text: string;
   error: string | null;
+  /** Phase 14: optional per-attempt summary rows (no resultText). Omitted for historical runs. */
+  attempts?: AttemptSummaryRow[];
 }
 
 export interface AgentReportInput {
@@ -47,11 +51,22 @@ export function buildAgentReportMarkdown(input: AgentReportInput): string {
       `- Task: \`${t.taskKey}\``,
       `- Status: ${t.status}`,
       `- Duration: ${formatMs(t.durationMs)}`,
-      '',
-      '#### Description',
-      '',
-      t.description.trim() || '(none)',
     );
+    if (t.attempts && t.attempts.length > 0) {
+      lines.push('', '#### Attempts', '');
+      for (const a of t.attempts) {
+        const parts = [
+          `#${a.attemptNumber}`,
+          a.status,
+          a.source,
+          formatMs(a.durationMs),
+          a.resultBytes != null ? `${a.resultBytes} B` : null,
+          a.error ? `error: ${a.error}` : null,
+        ].filter(Boolean);
+        lines.push(`- ${parts.join(' · ')}`);
+      }
+    }
+    lines.push('', '#### Description', '', t.description.trim() || '(none)');
     if (t.expectedOutput) {
       lines.push('', '#### Expected output', '', t.expectedOutput.trim());
     }
