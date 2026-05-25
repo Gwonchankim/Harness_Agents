@@ -2,6 +2,7 @@
 
 import { transitiveDownstream } from '@lib/dag/downstream';
 
+import { AttemptHistory } from './AttemptHistory';
 import { RerunTaskButton } from './RerunTaskButton';
 
 interface Agent {
@@ -107,6 +108,9 @@ export function DagGraph({
                     onRerun={onRerun}
                   />
                 </div>
+              ) : null}
+              {runId && t.status !== 'pending' && t.status !== 'blocked' ? (
+                <AttemptHistory runId={runId} taskId={t.id} />
               ) : null}
             </li>
           );

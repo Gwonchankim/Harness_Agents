@@ -31,7 +31,7 @@ export async function POST(
   // and cleared once the executor settles.
   const controller = new AbortController();
   registerRunController(runId, controller);
-  void executeResume(runId, { signal: controller.signal })
+  void executeResume(runId, { signal: controller.signal, source: 'resume' })
     .catch((err) => {
       console.error(`executeResume threw for runId=${runId}:`, err);
     })
