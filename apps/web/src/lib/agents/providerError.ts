@@ -25,6 +25,8 @@ export interface GenerateErrorClassification {
   kind: GenerateErrorKind;
   /** HTTP-ish status when one could be extracted (401 / 403 / 404 / 429). */
   status?: number;
+  /** Provider-suggested wait (ms) parsed from a `Retry-After` header, when present. */
+  retryAfterMs?: number;
 }
 
 /**
@@ -53,6 +55,28 @@ export function extractProviderErrorStatus(err: unknown): number | null {
 export function looksLikeRateLimit(err: unknown): boolean {
   if (extractProviderErrorStatus(err) === 429) return true;
   return err instanceof Error && /rate.?limit|too many requests|quota exceeded/i.test(err.message);
+}
+
+/**
+ * Best-effort `Retry-After` extraction. Reads a `responseHeaders`/`headers` bag
+ * (AI SDK `APICallError` exposes `responseHeaders`) for a `retry-after` value in
+ * delta-seconds and converts to ms. HTTP-date form is NOT parsed here (Phase 10+).
+ * Returns undefined when absent or not a plain integer.
+ */
+export function extractRetryAfterMs(err: unknown): number | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const bag =
+    ((err as { responseHeaders?: unknown }).responseHeaders ??
+      (err as { headers?: unknown }).headers) as Record<string, unknown> | undefined;
+  if (!bag || typeof bag !== 'object') return undefined;
+  const raw = bag['retry-after'] ?? bag['Retry-After'];
+  if (raw == null) return undefined;
+  const s = String(raw).trim();
+  const seconds = Number.parseInt(s, 10);
+  if (Number.isFinite(seconds) && seconds >= 0 && String(seconds) === s) {
+    return seconds * 1000;
+  }
+  return undefined;
 }
 
 export function looksLikeModelNotFound(err: unknown): boolean {
@@ -85,7 +109,13 @@ export function classifyGenerateError(err: unknown): GenerateErrorClassification
   if (err instanceof GenerateTimeoutError) return { kind: 'timeout' };
   const status = extractProviderErrorStatus(err);
   if (status === 401 || status === 403) return { kind: 'auth', status };
-  if (looksLikeRateLimit(err)) return { kind: 'rate_limit', status: status ?? undefined };
+  if (looksLikeRateLimit(err)) {
+    return {
+      kind: 'rate_limit',
+      status: status ?? undefined,
+      retryAfterMs: extractRetryAfterMs(err),
+    };
+  }
   if (looksLikeModelNotFound(err)) return { kind: 'model_not_found', status: status ?? undefined };
   if (looksLikeSchemaError(err)) return { kind: 'schema' };
   return { kind: 'provider_unavailable' };

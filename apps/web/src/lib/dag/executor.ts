@@ -711,17 +711,25 @@ async function runOneTask(ctx: RunOneTaskCtx): Promise<RunOneTaskOutcome> {
     } catch (err) {
       if (signal?.aborted) return 'aborted'; // cancel.ts owns the cancelled terminal state
       attempts += 1;
-      const kind = classifyGenerateError(err).kind;
-      const decision = nextBackoff(kind, attempts);
+      const classification = classifyGenerateError(err);
+      const { kind, retryAfterMs } = classification;
+      const decision = nextBackoff(kind, attempts, { retryAfterMs });
       if (decision.retry) {
+        const delayMs = withJitter(decision.delayMs);
         await appendEvent({
           runId,
           taskId: t.id,
           agentId: ag.id,
           type: 'task.retry.attempt',
-          payload: { taskKey: t.taskKey, attempt: attempts, kind, delayMs: decision.delayMs },
+          payload: {
+            taskKey: t.taskKey,
+            attempt: attempts,
+            kind,
+            delayMs,
+            ...(retryAfterMs != null ? { retryAfterMs } : {}),
+          },
         });
-        const abortedDuringWait = await abortableDelay(decision.delayMs, signal);
+        const abortedDuringWait = await abortableDelay(delayMs, signal);
         if (abortedDuringWait) return 'aborted';
         continue;
       }
@@ -741,6 +749,17 @@ async function runOneTask(ctx: RunOneTaskCtx): Promise<RunOneTaskOutcome> {
       return 'failed';
     }
   }
+}
+
+/**
+ * Apply ±20% jitter to a backoff delay (spreads concurrent retries). Kept out of
+ * the pure `nextBackoff` policy so the policy stays deterministic/testable; jitter
+ * is a runtime-only concern applied right before sleeping.
+ */
+function withJitter(ms: number): number {
+  if (ms <= 0) return ms;
+  const factor = 1 + (Math.random() * 2 - 1) * 0.2;
+  return Math.max(0, Math.round(ms * factor));
 }
 
 /** Sleep `ms`, resolving early to `true` if the signal aborts during the wait. */

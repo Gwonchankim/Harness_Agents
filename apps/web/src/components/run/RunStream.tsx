@@ -89,6 +89,7 @@ const RUN_EVENT_TYPES = [
   'task.completed',
   'task.failed',
   'task.retry.attempt',
+  'task.reset',
   'result.created',
   'run.completed',
   'run.cancelled',
@@ -110,6 +111,7 @@ function reducer(state: State, action: Action): State {
       let taskOutputs = state.taskOutputs;
       let status = state.status;
       let failedReason = state.failedReason;
+      let finalResult = state.finalResult;
       for (const ev of action.events) {
         const next = applyEvent(tasks, taskOutputs, ev);
         tasks = next.tasks;
@@ -131,6 +133,7 @@ function reducer(state: State, action: Action): State {
         if (ev.type === 'run.resumed') {
           status = 'running';
           failedReason = null;
+          finalResult = null;
         }
       }
       const lastEventId =
@@ -145,6 +148,7 @@ function reducer(state: State, action: Action): State {
         lastEventId,
         status,
         failedReason,
+        finalResult,
       };
     }
     case 'set-transport':
@@ -207,6 +211,23 @@ function applyEvent(
       }
       break;
     }
+    case 'task.reset': {
+      // Phase 9: a re-run reset this task to pending. Clear its output buffer so
+      // the new attempt's stream does not concatenate onto the previous result.
+      const p = ev.payload as { taskKey?: string };
+      if (typeof p?.taskKey === 'string') {
+        return {
+          tasks: updateTaskByKey(p.taskKey, {
+            status: 'pending',
+            error: null,
+            completedAt: null,
+            result: null,
+          }),
+          taskOutputs: { ...outputs, [p.taskKey]: '' },
+        };
+      }
+      break;
+    }
     case 'agent.output.delta': {
       const p = ev.payload as { taskKey?: string; text?: string };
       if (typeof p?.taskKey === 'string' && typeof p.text === 'string') {
@@ -223,14 +244,14 @@ function applyEvent(
 }
 
 function initialReducerState(initial: InitialState): State {
-  // Rebuild outputs by replaying the streamed deltas with the same reset-on-start
-  // semantics as the live reducer: each `task.started` clears the buffer so only
+  // Rebuild outputs by replaying the streamed deltas with the same reset semantics
+  // as the live reducer: each `task.reset`/`task.started` clears the buffer so only
   // the latest attempt's stream survives (matters after resume/retry). Then fall
   // back to the persisted `Task.result` for done tasks whose deltas are not in the
   // event window (so their output is never blank, and never doubled).
   const outputs: Record<string, string> = {};
   for (const ev of initial.events) {
-    if (ev.type === 'task.started') {
+    if (ev.type === 'task.started' || ev.type === 'task.reset') {
       const p = ev.payload as { taskKey?: string };
       if (typeof p?.taskKey === 'string') outputs[p.taskKey] = '';
     } else if (ev.type === 'agent.output.delta') {
@@ -267,6 +288,7 @@ export function RunStream({ runId, initial }: Props) {
   const [savingModels, setSavingModels] = useState(false);
   const [modelSaveMessage, setModelSaveMessage] = useState<string | null>(null);
   const [modelSaveError, setModelSaveError] = useState<string | null>(null);
+  const [streamRunNonce, setStreamRunNonce] = useState(0);
 
   const isTerminal = state.status === 'succeeded' || state.status === 'failed';
   const recoverableModelFailure = isRecoverableModelFailure(state.failedReason);
@@ -439,7 +461,7 @@ export function RunStream({ runId, initial }: Props) {
       if (reconcileTimer) clearInterval(reconcileTimer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId]);
+  }, [runId, streamRunNonce]);
 
   async function startRun() {
     setStarting(true);
@@ -578,9 +600,10 @@ export function RunStream({ runId, initial }: Props) {
           <ResumeRunButton
             runId={runId}
             doneCount={resumableDoneCount}
-            onResumed={() =>
-              dispatch({ type: 'set-run-meta', status: 'running', failedReason: null })
-            }
+            onResumed={() => {
+              dispatch({ type: 'set-run-meta', status: 'running', failedReason: null });
+              setStreamRunNonce((value) => value + 1);
+            }}
           />
         ) : null}
 
@@ -595,7 +618,16 @@ export function RunStream({ runId, initial }: Props) {
           />
         ) : null}
 
-        <DagGraph tasks={state.tasks} agents={state.team.agents} />
+        <DagGraph
+          tasks={state.tasks}
+          agents={state.team.agents}
+          runId={runId}
+          runStatus={state.status}
+          onRerun={() => {
+            dispatch({ type: 'set-run-meta', status: 'running', failedReason: null });
+            setStreamRunNonce((value) => value + 1);
+          }}
+        />
 
         <FinalResultPane finalResult={state.finalResult} status={state.status} runId={runId} />
 

@@ -1,12 +1,18 @@
-// Prepare a failed/cancelled run for in-place partial resume (Phase 8). The third
-// retry strategy alongside lib/runs/retry.ts (reset / clone): instead of starting
-// over, reset the failed/cancelled tasks to `pending` (keeping done tasks and
-// their results), flip the run back to `running`, and emit `run.resumed`. The
-// /resume (and task-retry) route then fires `executeResume`, which skips planning
-// and runs only the not-done tasks. Schema-free: reuses existing free-form status
-// columns + a new free-form RunEvent type.
+// Prepare a run for in-place resume / re-run (Phase 8 + Phase 9). Strategies:
+//   - 'auto'          run-level resume of a failed run (reset all failed/cancelled).
+//   - 'fromTask'      task-level retry of a failed/cancelled task.
+//   - 'rerunFromTask' (Phase 9) re-run a done/failed/cancelled task + its transitive
+//                     downstream on a TERMINAL run (failed or succeeded). Done tasks
+//                     not reset keep their results and are reused as upstream context.
+//
+// Always: reset the chosen tasks to `pending` (wiping their result), flip the run to
+// `running`, emit a `task.reset` audit event per reset task (carrying the previous
+// status/bytes — prior full output remains reconstructable from append-only
+// agent.output.delta events), then `run.resumed`. The route fires `executeResume`.
+// Schema-free: existing free-form status columns + new free-form RunEvent types.
 
 import { prisma } from '@db/client';
+import { parseJson } from '@lib/db/json';
 
 import { appendEvent } from '@lib/events/append';
 
@@ -28,13 +34,19 @@ export interface ResumeError {
     | 'no_reusable_done_tasks'
     | 'no_resumable_tasks'
     | 'target_not_found'
-    | 'task_not_retryable';
+    | 'task_not_retryable'
+    | 'task_not_rerunnable';
   status: number;
   runStatus?: string;
 }
 
 export function isResumeError(value: ResumeResult | ResumeError): value is ResumeError {
   return 'error' in value;
+}
+
+/** Run states from which a `rerunFromTask` (Phase 9) is allowed. */
+function rerunAllowed(status: string): boolean {
+  return status === 'failed' || status === 'succeeded';
 }
 
 /**
@@ -51,24 +63,39 @@ export async function prepareResume(
       id: true,
       status: true,
       plan: { select: { id: true } },
-      tasks: { select: { taskKey: true, status: true } },
+      tasks: {
+        select: { id: true, taskKey: true, status: true, dependencies: true, result: true },
+      },
     },
   });
   if (!run) return { error: 'run_not_found', status: 404 };
-  if (run.status !== 'failed') {
+
+  // Phase 9: rerunFromTask works on terminal runs (failed | succeeded). The Phase 8
+  // strategies (auto / fromTask) remain restricted to failed runs.
+  const statusOk =
+    mode.kind === 'rerunFromTask' ? rerunAllowed(run.status) : run.status === 'failed';
+  if (!statusOk) {
     return { error: 'run_not_resumable', status: 409, runStatus: run.status };
   }
 
-  const plan = computeResumePlan({
-    planExists: run.plan != null,
-    tasks: run.tasks,
-    mode,
-  });
+  const taskInputs = run.tasks.map((t) => ({
+    taskKey: t.taskKey,
+    status: t.status,
+    dependencies: parseJson<string[]>(t.dependencies, []),
+  }));
+
+  const plan = computeResumePlan({ planExists: run.plan != null, tasks: taskInputs, mode });
   if (!plan.eligible) {
     const reason = plan.reason ?? 'no_resumable_tasks';
     const status = reason === 'target_not_found' ? 404 : 409;
     return { error: reason, status };
   }
+
+  // Capture prior state for the audit trail before it is wiped.
+  const resetSet = new Set(plan.resetKeys);
+  const resetRows = run.tasks.filter((t) => resetSet.has(t.taskKey));
+  const resetReason = mode.kind === 'rerunFromTask' ? 'rerun_from_task' : 'resume';
+  const resetByTaskKey = 'targetKey' in mode ? mode.targetKey : undefined;
 
   await prisma.$transaction([
     prisma.task.updateMany({
@@ -81,6 +108,30 @@ export async function prepareResume(
     }),
   ]);
 
+  // Audit each reset task (especially done ones whose result was overwritten).
+  for (const row of resetRows) {
+    const previousResult = row.result
+      ? parseJson<{ bytes?: number; text?: string }>(row.result, {})
+      : {};
+    const previousBytes =
+      previousResult.bytes ??
+      (typeof previousResult.text === 'string'
+        ? Buffer.byteLength(previousResult.text, 'utf8')
+        : null);
+    await appendEvent({
+      runId,
+      taskId: row.id,
+      type: 'task.reset',
+      payload: {
+        taskKey: row.taskKey,
+        previousStatus: row.status,
+        previousBytes,
+        reason: resetReason,
+        ...(resetByTaskKey ? { resetByTaskKey } : {}),
+      },
+    });
+  }
+
   await appendEvent({
     runId,
     type: 'run.resumed',
@@ -88,7 +139,7 @@ export async function prepareResume(
       mode: mode.kind,
       resumedTasks: plan.resetKeys.length,
       doneReused: plan.doneCount,
-      ...(mode.kind === 'fromTask' ? { fromTaskKey: mode.targetKey } : {}),
+      ...(resetByTaskKey ? { fromTaskKey: resetByTaskKey } : {}),
     },
   });
 
