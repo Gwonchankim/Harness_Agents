@@ -56,6 +56,7 @@ function rerunAllowed(status: string): boolean {
 export async function prepareResume(
   runId: string,
   mode: ResumeMode,
+  opts?: { trigger?: 'process_restart' },
 ): Promise<ResumeResult | ResumeError> {
   const run = await prisma.run.findUnique({
     where: { id: runId },
@@ -140,6 +141,7 @@ export async function prepareResume(
       resumedTasks: plan.resetKeys.length,
       doneReused: plan.doneCount,
       ...(resetByTaskKey ? { fromTaskKey: resetByTaskKey } : {}),
+      ...(opts?.trigger ? { trigger: opts.trigger } : {}),
     },
   });
 

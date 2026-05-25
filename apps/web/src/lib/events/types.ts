@@ -83,10 +83,11 @@ export interface RunCancelledPayload {
 }
 
 export interface RunResumedPayload {
-  mode: 'auto' | 'fromTask';
+  mode: 'auto' | 'fromTask' | 'rerunFromTask';
   resumedTasks: number;
   doneReused: number;
   fromTaskKey?: string;
+  trigger?: 'process_restart';
 }
 
 // ---------------------------------------------------------------------------
@@ -113,4 +114,32 @@ export interface RevisionApprovedPayload {
 
 export interface RevisionRejectedPayload {
   baseRevisionId: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 9 — task-level reset audit (re-run). `RunEvent.type` is free-form at the
+// DB layer; typed here for readers. Prior full output stays reconstructable from
+// the append-only `agent.output.delta` events preceding the reset.
+// ---------------------------------------------------------------------------
+
+export type Phase9EventType = 'task.reset';
+
+export interface TaskResetPayload {
+  taskKey: string;
+  previousStatus: string;
+  previousBytes: number | null;
+  reason: 'rerun_from_task' | 'resume';
+  resetByTaskKey?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 — auto-resume of interrupted runs. A successful auto-resume reuses
+// `run.resumed` (with `trigger:'process_restart'`); a failed auto-resume records
+// this event and the run is left `failed` (no retry).
+// ---------------------------------------------------------------------------
+
+export type Phase10EventType = 'run.autoresume.failed';
+
+export interface RunAutoresumeFailedPayload {
+  reason: string;
 }
