@@ -8,6 +8,7 @@ import { prisma } from '@db/client';
 import { parseJson } from '@lib/db/json';
 
 import { loadRunResultMarkdown } from '@lib/results/finalResult';
+import { loadRunArtifacts } from '@lib/results/runArtifacts';
 import { ensureRecovered } from '@lib/runtime/recovery';
 
 export const runtime = 'nodejs';
@@ -38,7 +39,7 @@ export async function GET(
     return NextResponse.json({ error: 'run_not_found' }, { status: 404 });
   }
 
-  const [events, tasks, finalResult] = await Promise.all([
+  const [events, tasks, finalResult, artifacts] = await Promise.all([
     prisma.runEvent.findMany({
       where: { runId, ...(since ? { id: { gt: since } } : {}) },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -49,6 +50,7 @@ export async function GET(
       orderBy: { createdAt: 'asc' },
     }),
     loadRunResultMarkdown(runId),
+    loadRunArtifacts(runId),
   ]);
 
   const lastEventId = events.length > 0 ? events[events.length - 1]!.id : since;
@@ -83,6 +85,7 @@ export async function GET(
       createdAt: e.createdAt.toISOString(),
     })),
     finalResult,
+    artifacts,
     nextSince: lastEventId,
   });
 }

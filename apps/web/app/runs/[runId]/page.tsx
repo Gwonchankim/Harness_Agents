@@ -7,6 +7,7 @@ import {
   buildFinalResultMarkdown,
   loadRunResultMarkdown,
 } from '@lib/results/finalResult';
+import { loadRunArtifacts } from '@lib/results/runArtifacts';
 import { ensureRecovered } from '@lib/runtime/recovery';
 
 import { RunContextHeader } from '@/components/run/RunContextHeader';
@@ -67,7 +68,7 @@ export default async function RunDetailPage({ params }: PageProps) {
     );
   }
 
-  const [tasks, recentEvents, modelCatalog, storedFinalResult] = await Promise.all([
+  const [tasks, recentEvents, modelCatalog, storedFinalResult, artifacts] = await Promise.all([
     prisma.task.findMany({
       where: { runId },
       orderBy: { createdAt: 'asc' },
@@ -100,6 +101,7 @@ export default async function RunDetailPage({ params }: PageProps) {
     }),
     listEnabledModels(),
     loadRunResultMarkdown(runId),
+    loadRunArtifacts(runId),
   ]);
   const mappedTasks = tasks.map((t) => ({
     id: t.id,
@@ -176,6 +178,7 @@ export default async function RunDetailPage({ params }: PageProps) {
             isDefault: m.isDefault,
           })),
           finalResult: storedFinalResult ?? fallbackFinalResult,
+          artifacts,
         }}
       />
     </section>

@@ -10,6 +10,7 @@ import { AgentReportPane } from './AgentReportPane';
 import { ResumeRunButton } from './ResumeRunButton';
 import { DagGraph } from './DagGraph';
 import { RunActivityTimeline } from './RunActivityTimeline';
+import { RunExportsPane, type ArtifactMeta } from './RunExportsPane';
 import { RunProgressOverlay, type RunProgressStage } from './RunProgressOverlay';
 
 interface InitialAgent {
@@ -53,6 +54,7 @@ interface InitialState {
   events: InitialEvent[];
   modelCatalog: ModelCatalogClient[];
   finalResult: string | null;
+  artifacts: ArtifactMeta[];
 }
 
 interface Props {
@@ -77,6 +79,7 @@ interface State {
   lastEventId: string | null;
   transport: 'connecting' | 'sse' | 'polling' | 'closed';
   finalResult: string | null;
+  artifacts: ArtifactMeta[];
 }
 
 type ProviderKey = 'openai' | 'anthropic' | 'google' | 'ollama';
@@ -103,7 +106,8 @@ type Action =
   | { type: 'set-tasks'; tasks: InitialTask[] }
   | { type: 'set-team-agents'; agents: InitialAgent[] }
   | { type: 'set-run-meta'; status: string; failedReason: string | null }
-  | { type: 'set-final-result'; finalResult: string | null };
+  | { type: 'set-final-result'; finalResult: string | null }
+  | { type: 'set-artifacts'; artifacts: ArtifactMeta[] };
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
@@ -162,6 +166,8 @@ function reducer(state: State, action: Action): State {
       return { ...state, status: action.status, failedReason: action.failedReason };
     case 'set-final-result':
       return { ...state, finalResult: action.finalResult };
+    case 'set-artifacts':
+      return { ...state, artifacts: action.artifacts };
     default:
       return state;
   }
@@ -276,6 +282,7 @@ function initialReducerState(initial: InitialState): State {
       initial.events.length > 0 ? initial.events[initial.events.length - 1]!.id : null,
     transport: 'connecting',
     finalResult: initial.finalResult,
+    artifacts: initial.artifacts,
   };
 }
 
@@ -330,6 +337,7 @@ export function RunStream({ runId, initial }: Props) {
         events?: InitialEvent[];
         nextSince?: string | null;
         finalResult?: string | null;
+        artifacts?: ArtifactMeta[];
       };
       if (cancelled) return true;
       if (Array.isArray(data.events) && data.events.length > 0) {
@@ -341,6 +349,9 @@ export function RunStream({ runId, initial }: Props) {
       }
       if ('finalResult' in data) {
         dispatch({ type: 'set-final-result', finalResult: data.finalResult ?? null });
+      }
+      if (Array.isArray(data.artifacts)) {
+        dispatch({ type: 'set-artifacts', artifacts: data.artifacts });
       }
       if (data.run?.status) {
         dispatch({
@@ -631,6 +642,8 @@ export function RunStream({ runId, initial }: Props) {
         />
 
         <FinalResultPane finalResult={state.finalResult} status={state.status} runId={runId} />
+
+        <RunExportsPane runId={runId} artifacts={state.artifacts} agents={state.team.agents} />
 
         <RunActivityTimeline
           events={state.events}
