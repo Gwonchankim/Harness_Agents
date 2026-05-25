@@ -48,8 +48,51 @@ Update this file at the end of each Phase.
 - Phase 12 (Attempt History UX & Large ResultText Safeguards) implemented, verified, and merged on 2026-05-25 (branch `phase-12-attempt-ux`, commit `eda57f9`, PR #10 merged as `de7fc34`). Splits the attempts API into a metadata-only list and a lazy per-attempt full-text detail endpoint, and upgrades AttemptHistory (source/status filters, two-dropdown arbitrary compare, 2,000-char preview + "Show full text", lazy diff). No schema migration, no new dependency. typecheck clean; 188 / 188 tests; `next build` PASS (`/attempts` + new `/attempts/[attemptId]`); prisma migrate status 4 migrations (0 added). Plan in `PHASE12_PLAN.md`. Run activity timeline and report-to-TaskAttempt linkage deferred to Phase 13/14.
 - Phase 13 (Run Activity Timeline) implemented, verified, and merged on 2026-05-25 (branch `phase-13-activity-timeline`, commit `5184010`, PR #11 merged as `06013da`). Adds a chronological activity timeline to the run detail screen, built purely from the events the client already holds (`state.events`/`state.tasks`/`state.team.agents`) via the new pure `buildActivityTimeline` — no new API, no reducer change. Excludes `agent.output.delta`/`agent.output.completed`/`revision.*`/`feedback.*`; renders run/task lifecycle + control events with level styling, default collapsed (failed/cancelled runs start expanded), internal scroll, neutral fallback for unknown/legacy events. No schema migration, no new dependency. typecheck clean; 204 / 204 tests; `next build` PASS (route count unchanged); prisma migrate status 4 migrations (0 added, schema unchanged). Plan in `PHASE13_PLAN.md`. Reports↔TaskAttempt linkage deferred to Phase 14.
 - Phase 14 (Reports Attempt Summaries) implemented, verified, and merged on 2026-05-25 (branch `phase-14-reports-attempts`, commit `1ad612e`, PR #12 merged as `21bf286`). Links Phase 11 TaskAttempt history into the Phase 5 report exports (summary only): `report.md` gains a run-level Attempt summary + per-task Attempts column, and `agent-reports/{agentId}.md` gain a per-task Attempts summary section. `result.md` (deliverable) / FinalResult UI / executor are unchanged; `exportReports` includes task attempts but never selects `TaskAttempt.resultText` (counts/status/source/duration/bytes only — full-text comparison stays in the Phase 12 AttemptHistory UI). Historical runs (no attempts) degrade gracefully. No schema migration, no new dependency, no new API. typecheck clean; 213 / 213 tests; `next build` PASS (route count unchanged); prisma migrate status 4 migrations (0 added, schema unchanged). Plan in `PHASE14_PLAN.md`.
+- Phase 15 (Run Exports Panel & Artifact Hygiene) implemented, verified, and merged on 2026-05-25 (branch `phase-15-export-hygiene`, commit `e56b958`, PR #13 merged as `6667264`). Adds a `RunExportsPane` to the run detail screen that surfaces a run's exported files (`result.md`, `report.md`, `agent-reports/*`); append-only `Artifact` rows are collapsed at the display layer to the latest per `(runId, kind, path)` (no DB cleanup / upsert / unique index / backfill). New lazy content endpoint `GET /api/runs/[runId]/artifacts/[artifactId]` validates artifact ownership (id + runId), resolves the path via `safeJoin`/`workspaceRoot`, caps the preview at 200,000 chars, and degrades a missing-on-disk file to `{ missing: true }`. state/page carry artifact metadata only (no content/resultText/sha256/taskId); agent-reports map `{agentId}.md` to the agent name (filename fallback). `FinalResultPane` / `result.md` / `finalResult.ts` unchanged. No schema migration, no new dependency. typecheck clean; 218 / 218 tests; `next build` PASS (1 new route); prisma migrate status 4 migrations (0 added, schema unchanged). Plan in `PHASE15_PLAN.md`.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
+
+## Phase 15 — Run Exports Panel & Artifact Hygiene (2026-05-25)
+
+Status: Implemented, verified, and merged. Branch `phase-15-export-hygiene`. Plan: `PHASE15_PLAN.md`. Commit `e56b958`; PR #13 merged as `6667264`.
+
+### Approved scope (decisions)
+
+1. Add a `RunExportsPane` to the run detail screen so users can discover/inspect a run's exported files in-app: `result.md`, `report.md`, and `agent-reports/*`.
+2. `Artifact` rows stay **append-only**; the UI/query layer collapses them to the latest row per `(runId, kind, path)`. No DB cleanup / upsert / unique index / backfill (deferred to Phase 16+).
+3. New lazy content endpoint `GET /api/runs/[runId]/artifacts/[artifactId]`: validates artifact ownership (id + runId), resolves the file through `safeJoin`/`workspaceRoot` (path-traversal safe), caps the preview at 200,000 chars (`truncated`/`totalChars`), and degrades a DB row whose file is missing on disk to `{ missing: true }` (HTTP 200, no 500, no path leak).
+4. `state` / `page` carry artifact **metadata only** (`id, kind, path, bytes, createdAt`) — never content / resultText / sha256 / taskId; file bytes are fetched solely via the lazy endpoint.
+5. agent-reports display the agent name mapped from the `{agentId}.md` filename (fallback to the raw filename on miss). `FinalResultPane` / `result.md` / `finalResult.ts` are unchanged (the panel is additive, placed after FinalResultPane). schema migration 0, dependency 0.
+
+### New files
+
+- `src/lib/results/artifactList.ts` (+ test) — pure `selectLatestArtifacts(rows)`: latest per `(kind, path)` by `createdAt` (deterministic id tie-break), stable display order (result → report → agent → other, then path). prisma-free.
+- `src/lib/results/runArtifacts.ts` — DB loader `loadRunArtifacts(runId)` wrapping the pure helper; returns metadata only (drops sha256 / taskId / content).
+- `app/api/runs/[runId]/artifacts/[artifactId]/route.ts` — lazy content endpoint (ownership + safeJoin + 200,000-char preview cap + missing-file graceful).
+- `src/components/run/RunExportsPane.tsx` — collapsible "Exports" panel: per-row kind label, filename (agent-name mapped for agent-reports), size, time, copy-path, and lazy text preview.
+
+### Modified files
+
+- `app/api/runs/[runId]/state/route.ts` — adds `loadRunArtifacts(runId)` to the snapshot; returns `artifacts` metadata (no content).
+- `app/runs/[runId]/page.tsx` — loads artifact metadata and passes it into `RunStream`'s `initial`.
+- `src/components/run/RunStream.tsx` — threads `artifacts` through `InitialState` / `State` / reducer (`set-artifacts`) + the state-snapshot reconcile; renders `<RunExportsPane>` after `FinalResultPane`, passing `state.team.agents` for name mapping.
+- `apps/web/package.json` — registered `artifactList.test.ts`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS (0 errors).
+- `corepack pnpm --filter web test` — PASS, 218 / 218 (`selectLatestArtifacts` dedupe / order / tie-break cases added).
+- `next build` — PASS, 1 new route (`/api/runs/[runId]/artifacts/[artifactId]`).
+- `prisma migrate status` — PASS, 4 migrations, schema unchanged (no migration added).
+- code-review (xhigh) — no blocking findings; pre-commit fixes: agent-name mapping in the panel (per plan), and moved the lazy-fetch side-effect out of the `setExpanded` updater (prevents a React StrictMode double-fetch).
+- Provider-free smoke (loader + route handler against real dev.db): a run with 28 raw `Artifact` rows collapsed to 8 distinct `(runId, kind, path)` groups (latest-per-group); the payload was metadata-only; the endpoint returned 200 with content, 404 for an unknown id, and 404 for a cross-run id (ownership); a missing-on-disk file degraded to `{ missing: true }`; and a 250k-char file was truncated to the 200k preview cap.
+
+### Deferred (Phase 16+)
+
+- Artifact cleanup / `(runId, kind, path)` upsert / unique index.
+- Download button.
+- Markdown renderer (preview stays plain text).
+- Deeper artifact audit UI.
 
 ## Phase 14 — Reports Attempt Summaries (2026-05-25)
 
