@@ -2,6 +2,8 @@
 // report, distinct from result.md (the deliverable synthesis built by
 // finalResult.ts). No I/O here; the exporter and the feedback page both call this.
 
+import { rollupTaskAttempts, type AttemptSummaryRow } from './attemptSummary';
+
 export interface ReportTaskInput {
   taskKey: string;
   title: string;
@@ -10,6 +12,8 @@ export interface ReportTaskInput {
   durationMs: number | null;
   outputBytes: number | null;
   error: string | null;
+  /** Phase 14: optional per-attempt summary rows (no resultText). Omitted for historical runs. */
+  attempts?: AttemptSummaryRow[];
 }
 
 export interface ReportAgentInput {
@@ -64,9 +68,22 @@ export function buildRunReportMarkdown(input: RunReportInput): string {
 
   lines.push('', '## Plan rationale', '', input.rationale?.trim() || '(no rationale recorded)');
 
+  const hasAnyAttempts = input.tasks.some((t) => (t.attempts?.length ?? 0) > 0);
+
   lines.push('', '## Task timeline', '');
   if (input.tasks.length === 0) {
     lines.push('No tasks were recorded for this run.');
+  } else if (hasAnyAttempts) {
+    lines.push('| # | Task key | Agent | Status | Attempts | Duration | Output bytes |');
+    lines.push('|---|---|---|---|---|---|---|');
+    input.tasks.forEach((t, i) => {
+      const attemptCount = t.attempts?.length ? String(t.attempts.length) : '—';
+      lines.push(
+        `| ${i + 1} | \`${t.taskKey}\` | ${t.agentName} | ${t.status} | ${attemptCount} | ${formatMs(
+          t.durationMs,
+        )} | ${t.outputBytes ?? '—'} |`,
+      );
+    });
   } else {
     lines.push('| # | Task key | Agent | Status | Duration | Output bytes |');
     lines.push('|---|---|---|---|---|---|');
@@ -84,6 +101,34 @@ export function buildRunReportMarkdown(input: RunReportInput): string {
     lines.push('', '## Failures', '');
     for (const f of failures) {
       lines.push(`- \`${f.taskKey}\` (${f.agentName}): ${f.error}`);
+    }
+  }
+
+  if (hasAnyAttempts) {
+    lines.push('', '## Attempt summary', '');
+    const withAttempts = input.tasks.filter((t) => (t.attempts?.length ?? 0) > 0);
+    const totalAttempts = withAttempts.reduce((s, t) => s + (t.attempts?.length ?? 0), 0);
+    lines.push(`- Total attempts: ${totalAttempts} across ${withAttempts.length} task(s).`);
+    const notable = withAttempts
+      .map((t) => ({ t, r: rollupTaskAttempts(t.attempts ?? []) }))
+      .filter(({ r }) => r.count > 1 || r.reran || r.resumed || r.autoResumed || r.failedCount > 0);
+    if (notable.length === 0) {
+      lines.push('- All tasks completed on their first attempt.');
+    } else {
+      for (const { t, r } of notable) {
+        const flags = [
+          `${r.count} attempts`,
+          r.reran ? 'rerun_from_task' : null,
+          r.resumed ? 'resume' : null,
+          r.autoResumed ? 'auto_resume' : null,
+          r.failedCount > 0 ? `${r.failedCount} failed/cancelled` : null,
+        ]
+          .filter(Boolean)
+          .join(' · ');
+        lines.push(
+          `- \`${t.taskKey}\` (${t.agentName}): ${flags} — latest ${r.latestStatus ?? '—'} via ${r.latestSource ?? '—'}`,
+        );
+      }
     }
   }
 

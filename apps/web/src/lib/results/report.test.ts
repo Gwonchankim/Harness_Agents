@@ -45,3 +45,51 @@ test('buildRunReportMarkdown: no tasks is handled', () => {
   });
   assert.match(md, /No tasks were recorded/);
 });
+
+test('buildRunReportMarkdown: Attempts column + Attempt summary when attempts present', () => {
+  const md = buildRunReportMarkdown({
+    runId: 'run3',
+    userPrompt: 'p',
+    teamName: 'T',
+    status: 'succeeded',
+    rationale: null,
+    agents: [{ name: 'Worker', role: 'w', modelId: 'm', provider: 'google', isLead: false }],
+    tasks: [
+      {
+        taskKey: 't1',
+        title: 'T1',
+        agentName: 'Worker',
+        status: 'done',
+        durationMs: 1000,
+        outputBytes: 5,
+        error: null,
+        attempts: [
+          { attemptNumber: 1, status: 'done', source: 'initial', durationMs: 500, resultBytes: 5, error: null },
+          { attemptNumber: 2, status: 'done', source: 'rerun_from_task', durationMs: 600, resultBytes: 7, error: null },
+        ],
+      },
+    ],
+    startedAt: null,
+    endedAt: null,
+  });
+  assert.match(md, /\| Attempts \|/);
+  assert.match(md, /## Attempt summary/);
+  assert.match(md, /Total attempts: 2 across 1 task/);
+  assert.match(md, /rerun_from_task/);
+});
+
+test('buildRunReportMarkdown: no Attempts column/section for historical run (attempts absent)', () => {
+  const md = buildRunReportMarkdown({
+    runId: 'run4',
+    userPrompt: 'p',
+    teamName: 'T',
+    status: 'succeeded',
+    rationale: null,
+    agents: [],
+    tasks: [{ taskKey: 't1', title: 'T1', agentName: 'W', status: 'done', durationMs: 100, outputBytes: 1, error: null }],
+    startedAt: null,
+    endedAt: null,
+  });
+  assert.doesNotMatch(md, /## Attempt summary/);
+  assert.doesNotMatch(md, /\| Attempts \|/);
+});

@@ -10,6 +10,7 @@ import { writeWorkspaceFile } from '@lib/workspace/writeWorkspaceFile';
 
 import { buildRunReportMarkdown, type ReportTaskInput } from './report';
 import { buildAgentReportMarkdown, type AgentReportTaskInput } from './agentReport';
+import type { AttemptSummaryRow } from './attemptSummary';
 
 export async function exportRunReports(runId: string): Promise<void> {
   const run = await prisma.run.findUnique({
@@ -52,6 +53,20 @@ export async function exportRunReports(runId: string): Promise<void> {
           completedAt: true,
           result: true,
           error: true,
+          // Phase 14: per-attempt summary. resultText is intentionally NOT selected
+          // (size + redactor-free trust boundary); reports show summary only.
+          attempts: {
+            select: {
+              attemptNumber: true,
+              status: true,
+              source: true,
+              resultBytes: true,
+              error: true,
+              startedAt: true,
+              completedAt: true,
+            },
+            orderBy: { attemptNumber: 'asc' },
+          },
         },
         orderBy: { createdAt: 'asc' },
       },
@@ -73,6 +88,7 @@ export async function exportRunReports(runId: string): Promise<void> {
       durationMs: durationMs(t.startedAt, t.completedAt),
       outputBytes: typeof parsed.bytes === 'number' ? parsed.bytes : null,
       error: t.error,
+      attempts: mapAttempts(t.attempts),
     };
   });
 
@@ -125,6 +141,7 @@ export async function exportRunReports(runId: string): Promise<void> {
           durationMs: durationMs(t.startedAt, t.completedAt),
           text: parsed.text ?? '',
           error: t.error,
+          attempts: mapAttempts(t.attempts),
         };
       }),
     });
@@ -164,4 +181,25 @@ function durationMs(start: Date | null, end: Date | null): number | null {
   if (!start || !end) return null;
   const ms = end.getTime() - start.getTime();
   return ms >= 0 ? ms : null;
+}
+
+function mapAttempts(
+  rows: {
+    attemptNumber: number;
+    status: string;
+    source: string;
+    resultBytes: number | null;
+    error: string | null;
+    startedAt: Date;
+    completedAt: Date | null;
+  }[],
+): AttemptSummaryRow[] {
+  return rows.map((a) => ({
+    attemptNumber: a.attemptNumber,
+    status: a.status,
+    source: a.source,
+    durationMs: durationMs(a.startedAt, a.completedAt),
+    resultBytes: a.resultBytes,
+    error: a.error,
+  }));
 }
