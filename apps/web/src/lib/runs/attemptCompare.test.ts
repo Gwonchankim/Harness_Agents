@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { selectComparison } from './attemptCompare';
+import { resolveComparePair, selectComparison } from './attemptCompare';
 
 test('selectComparison: empty → null', () => {
   assert.equal(selectComparison([]), null);
@@ -53,3 +53,47 @@ test('selectComparison: unordered input picks top two by number', () => {
   assert.equal(r?.latest.attemptNumber, 3);
   assert.equal(r?.previous.attemptNumber, 2);
 });
+
+const three = [
+  { attemptNumber: 1, status: 'done' },
+  { attemptNumber: 2, status: 'failed' },
+  { attemptNumber: 3, status: 'done' },
+];
+
+test('resolveComparePair: both numbers valid → ordered (previous=lower, latest=higher)', () => {
+  assert.deepEqual(resolveComparePair(three, 1, 3), {
+    previous: { attemptNumber: 1, status: 'done' },
+    latest: { attemptNumber: 3, status: 'done' },
+  });
+});
+
+test('resolveComparePair: reversed selection normalizes by attemptNumber', () => {
+  assert.deepEqual(resolveComparePair(three, 3, 1), {
+    previous: { attemptNumber: 1, status: 'done' },
+    latest: { attemptNumber: 3, status: 'done' },
+  });
+});
+
+test('resolveComparePair: honors explicit selection even for non-terminal status', () => {
+  const withRunning = [
+    { attemptNumber: 1, status: 'done' },
+    { attemptNumber: 2, status: 'running' },
+  ];
+  assert.deepEqual(resolveComparePair(withRunning, 1, 2), {
+    previous: { attemptNumber: 1, status: 'done' },
+    latest: { attemptNumber: 2, status: 'running' },
+  });
+});
+
+test('resolveComparePair: same number → falls back to default', () => {
+  assert.deepEqual(resolveComparePair(three, 2, 2), selectComparison(three));
+});
+
+test('resolveComparePair: missing number → falls back to default', () => {
+  assert.deepEqual(resolveComparePair(three, 1, 99), selectComparison(three));
+});
+
+test('resolveComparePair: no selection → default latest vs previous', () => {
+  assert.deepEqual(resolveComparePair(three), selectComparison(three));
+});
+
