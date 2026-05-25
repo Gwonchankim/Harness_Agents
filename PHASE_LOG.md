@@ -46,8 +46,46 @@ Update this file at the end of each Phase.
 - Phase 10 (Auto-Resume Interrupted Runs) implemented, verified, and merged on 2026-05-25 (branch `phase-10-auto-resume`, commit `3c7bba8`, PR #8 merged as `f19baa3`). Extends the process-restart recovery sweep to auto-resume eligible interrupted runs behind the opt-in `HARNESS_AUTORESUME` flag (default OFF) via the existing `prepareResume({kind:'auto'})` + `executeResume`; records `run.autoresume.failed` on failure (no retry). No schema migration, no new dependency, executor core untouched. typecheck clean; 167 / 167 tests; `next build` 29 routes (no new route); prisma migrate status 3 migrations (0 added). Plan in `PHASE10_PLAN.md`.
 - Phase 11 (TaskAttempt History) implemented, verified, and merged on 2026-05-25 (branch `phase-11-task-attempt`, commit `08c10c1`, PR #9 merged as `daa78b8`). Adds a durable `TaskAttempt` table (one row per `runOneTask` execution; `source` = initial/resume/rerun_from_task/auto_resume) as the source of truth for attempt history, `GET /api/runs/[runId]/tasks/[taskId]/attempts`, and a per-task AttemptHistory panel in `DagGraph` (timeline + latest-vs-previous diff). `Task.result` stays the latest-output cache; `RunEvent` stays audit/stream. One additive migration `20260525051452_phase11_task_attempt` (no `Run`/`Task` column change), no new dependency. typecheck clean; 178 / 178 tests; `next build` PASS (new `/attempts` route); prisma migrate status 4 migrations (1 added). Plan in `PHASE11_PLAN.md`.
 - Phase 12 (Attempt History UX & Large ResultText Safeguards) implemented, verified, and merged on 2026-05-25 (branch `phase-12-attempt-ux`, commit `eda57f9`, PR #10 merged as `de7fc34`). Splits the attempts API into a metadata-only list and a lazy per-attempt full-text detail endpoint, and upgrades AttemptHistory (source/status filters, two-dropdown arbitrary compare, 2,000-char preview + "Show full text", lazy diff). No schema migration, no new dependency. typecheck clean; 188 / 188 tests; `next build` PASS (`/attempts` + new `/attempts/[attemptId]`); prisma migrate status 4 migrations (0 added). Plan in `PHASE12_PLAN.md`. Run activity timeline and report-to-TaskAttempt linkage deferred to Phase 13/14.
+- Phase 13 (Run Activity Timeline) implemented, verified, and merged on 2026-05-25 (branch `phase-13-activity-timeline`, commit `5184010`, PR #11 merged as `06013da`). Adds a chronological activity timeline to the run detail screen, built purely from the events the client already holds (`state.events`/`state.tasks`/`state.team.agents`) via the new pure `buildActivityTimeline` — no new API, no reducer change. Excludes `agent.output.delta`/`agent.output.completed`/`revision.*`/`feedback.*`; renders run/task lifecycle + control events with level styling, default collapsed (failed/cancelled runs start expanded), internal scroll, neutral fallback for unknown/legacy events. No schema migration, no new dependency. typecheck clean; 204 / 204 tests; `next build` PASS (route count unchanged); prisma migrate status 4 migrations (0 added, schema unchanged). Plan in `PHASE13_PLAN.md`. Reports↔TaskAttempt linkage deferred to Phase 14.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
+
+## Phase 13 — Run Activity Timeline (2026-05-25)
+
+Status: Implemented, verified, and merged. Branch `phase-13-activity-timeline`. Plan: `PHASE13_PLAN.md`. Commit `5184010`; PR #11 merged as `06013da`.
+
+### Approved scope (decisions)
+
+1. Run detail gains a chronological "Run activity" timeline built from `RunEvent`, fed purely from the client's existing `state.events` (+ `state.tasks`, `state.team.agents`) — **no new API, no reducer / schema / dependency change**.
+2. Included events: `run.started`, `plan.created`, `task.started`, `task.retry.attempt`, `task.reset`, `task.completed`, `task.failed`, `run.resumed`, `run.autoresume.failed`, `run.cancelled`, `run.completed`, `result.created`. `run.running` is recognized future-proof but is **not currently emitted** (no executor change to emit it).
+3. Excluded: `agent.output.delta`, `agent.output.completed` (high-volume stream), `revision.*`, `feedback.*`. `agent.output.delta` must never appear (enforced by unit test + smoke).
+4. Unknown / legacy / missing-payload events degrade to a neutral generic label (never crash); known types map to info/success/warn/error levels. Task/agent names resolved via `state.tasks` / `state.team.agents` with fallback to the raw key.
+5. UI: title `Run activity (N)`, placed **below `DagGraph` and above Agent Output**; default **collapsed**, but **failed/cancelled runs start expanded**; internal max-height scroll.
+
+### New files
+
+- `src/lib/runs/activityTimeline.ts` (+ test) — pure `buildActivityTimeline(events, { tasks, agents })`: include/exclude filter, known-type label/level mapping, taskKey→name & agentId→name resolution, defensive payload handling, id dedupe, input-order preservation.
+- `src/components/run/RunActivityTimeline.tsx` — collapsible timeline panel (event count, level colors, time, auto-expand on failed/cancelled, "활동 기록 없음" degrade when empty).
+
+### Modified files
+
+- `src/components/run/RunStream.tsx` — renders `<RunActivityTimeline>` between `FinalResultPane` and `AgentReportPane` using existing `state.events` / `state.tasks` / `state.team.agents` / `state.status` (import + one render block only; no reducer change).
+- `apps/web/package.json` — registered `activityTimeline.test.ts`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS (0 errors).
+- `corepack pnpm --filter web test` — PASS, 204 / 204 (`buildActivityTimeline` cases incl. mandatory `agent.output.delta` exclusion + id dedupe).
+- `next build` — PASS, route count unchanged (UI-only).
+- `prisma migrate status` — PASS, 4 migrations, schema unchanged (no migration added).
+- code-review (xhigh) hardening: `buildActivityTimeline` dedupes by event id so a briefly-duplicated event (SSE stream + state snapshot from the same cursor) cannot produce duplicate React keys on the timeline.
+- Provider-free smoke (pure transform over real dev-DB events): succeeded run lifecycle, failed run, cancelled run (`run.cancelled`), reset/resumed/rerun events, and a historical run all rendered correctly; `agent.output.delta` excluded across every run in the DB.
+
+### Deferred (Phase 14+)
+
+- Reports (result.md / report.md / agent-reports) ↔ TaskAttempt history linkage.
+- Server-side timeline pagination / filtering beyond the existing 1000 (SSR) / 2000 (client) event window.
+- Emitting a real `run.running` event (would require an executor change).
 
 ## Phase 12 — Attempt History UX & Large ResultText Safeguards (2026-05-25)
 
