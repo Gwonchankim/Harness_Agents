@@ -43,8 +43,130 @@ Update this file at the end of each Phase.
 - Phase 8 (Partial Resume & Provider Backoff) implemented and verified locally on 2026-05-25 on branch `phase-8-partial-resume`. Adds in-place partial resume of a failed/cancelled run that has a plan (`POST /api/runs/[runId]/resume`): failed/cancelled tasks reset to `pending`, done tasks reused as upstream context; plus failed/cancelled task-level retry (`POST /api/runs/[runId]/tasks/[taskId]/retry`), per-task transient backoff (rate_limit 2x / timeout 1x, abortable, `task.retry.attempt` events), and streamed-output replay/resume double-count protection (`task.started` resets the buffer). Review corrections added a done-task reuse guard (`no_reusable_done_tasks`), worker timeout classification for timeout backoff, and event typing/listening for `task.retry.attempt`. No schema migration, no new dependency. typecheck clean; 151 / 151 tests; `next build` 29 routes (2 new); prisma migrate status clean. Plan in `PHASE8_PLAN.md`. Provider-backed partial-resume smoke completed on 2026-05-25 with a synthetic failed run using Gemini: one done seed task was reused, one failed task re-ran to `done`, `run.resumed`/`result.created`/`run.completed` events were appended, and `result.md`/`report.md`/`agent_report.md` artifacts were exported.
 - Phase 9 (Done-Task Re-run & Backoff Hardening) implemented and verified locally on 2026-05-25 on branch `phase-9-done-rerun`. Adds re-running a done/failed/cancelled task on a terminal run (failed | succeeded) via the generalized `rerunFromTask` strategy — resetKeys = target + transitive downstream + all failed/cancelled — wiring `lib/dag/downstream.ts`; `task.reset` RunEvent audit before overwrite; Retry-After-aware backoff (`RateLimitError.retryAfterMs`, `nextBackoff` honors it) with executor-applied ±20% jitter. `/tasks/[taskId]/retry` now accepts done targets (failed/cancelled behavior unchanged). No schema migration, no new dependency. typecheck clean; 161 / 161 tests; `next build` 29 routes; prisma migrate status clean. Plan in `PHASE9_PLAN.md`. Provider-backed smoke completed on 2026-05-25 with Gemini: re-running a leaf done task reset only that task (`resetTasks:1, doneReused:1`), the upstream seed task's `startedAt` was unchanged (reused), the leaf re-ran to `done`, and `task.reset`/`run.resumed`/`task.started`/`result.created`/`run.completed` fired with `result.md` regenerated. Not yet committed/pushed (user handles git).
 - Phase 9 follow-up browser smoke correction completed on 2026-05-25: a middle done task (`gamification-ux`) was re-run on real run `cmpjndyul004s406jb61ui9nm`, resetting itself plus downstream `final-synthesis` while reusing unrelated upstream done tasks. A terminal re-run UI issue was fixed by restarting the live SSE/polling loop after `run.resumed`, clearing stale output/final-result state, and verifying the page returned to `succeeded` with the Final Result panel visible.
+- Phase 10 (Auto-Resume Interrupted Runs) implemented, verified, and merged on 2026-05-25 (branch `phase-10-auto-resume`, commit `3c7bba8`, PR #8 merged as `f19baa3`). Extends the process-restart recovery sweep to auto-resume eligible interrupted runs behind the opt-in `HARNESS_AUTORESUME` flag (default OFF) via the existing `prepareResume({kind:'auto'})` + `executeResume`; records `run.autoresume.failed` on failure (no retry). No schema migration, no new dependency, executor core untouched. typecheck clean; 167 / 167 tests; `next build` 29 routes (no new route); prisma migrate status 3 migrations (0 added). Plan in `PHASE10_PLAN.md`.
+- Phase 11 (TaskAttempt History) implemented, verified, and merged on 2026-05-25 (branch `phase-11-task-attempt`, commit `08c10c1`, PR #9 merged as `daa78b8`). Adds a durable `TaskAttempt` table (one row per `runOneTask` execution; `source` = initial/resume/rerun_from_task/auto_resume) as the source of truth for attempt history, `GET /api/runs/[runId]/tasks/[taskId]/attempts`, and a per-task AttemptHistory panel in `DagGraph` (timeline + latest-vs-previous diff). `Task.result` stays the latest-output cache; `RunEvent` stays audit/stream. One additive migration `20260525051452_phase11_task_attempt` (no `Run`/`Task` column change), no new dependency. typecheck clean; 178 / 178 tests; `next build` PASS (new `/attempts` route); prisma migrate status 4 migrations (1 added). Plan in `PHASE11_PLAN.md`.
+- Phase 12 (Attempt History UX & Large ResultText Safeguards) implemented, verified, and merged on 2026-05-25 (branch `phase-12-attempt-ux`, commit `eda57f9`, PR #10 merged as `de7fc34`). Splits the attempts API into a metadata-only list and a lazy per-attempt full-text detail endpoint, and upgrades AttemptHistory (source/status filters, two-dropdown arbitrary compare, 2,000-char preview + "Show full text", lazy diff). No schema migration, no new dependency. typecheck clean; 188 / 188 tests; `next build` PASS (`/attempts` + new `/attempts/[attemptId]`); prisma migrate status 4 migrations (0 added). Plan in `PHASE12_PLAN.md`. Run activity timeline and report-to-TaskAttempt linkage deferred to Phase 13/14.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
+
+## Phase 12 — Attempt History UX & Large ResultText Safeguards (2026-05-25)
+
+Status: Implemented, verified, and merged. Branch `phase-12-attempt-ux`. Plan: `PHASE12_PLAN.md`. Commit `eda57f9`; PR #10 merged as `de7fc34`.
+
+### Approved scope (decisions)
+
+1. The attempts LIST API is metadata-only — it never reads or returns `resultText`. Fields: `id, attemptNumber, status, source, resultBytes, hasResult (= resultBytes != null), startedAt, completedAt, durationMs, error`.
+2. New detail endpoint `GET /api/runs/[runId]/tasks/[taskId]/attempts/[attemptId]` returns one attempt's full `resultText` after validating the run → task → attempt ownership chain (lazy, on demand).
+3. AttemptHistory: source/status client-side filters; two `attemptNumber` dropdowns for arbitrary compare (default latest vs previous via `resolveComparePair`); per-attempt full text lazy-fetched with a 2,000-char preview + "Show full text"; the diff fetches only the two selected attempts' text and reuses `lib/feedback/diff.ts`.
+4. Historical runs (no attempts) degrade gracefully; fetched texts are cached; a failed text fetch surfaces an error instead of perpetual loading.
+5. schema migration 0, dependency 0; `TaskAttempt.resultText` stays the source of truth.
+
+### New files
+
+- `app/api/runs/[runId]/tasks/[taskId]/attempts/[attemptId]/route.ts` — lazy full-text detail endpoint with ownership-chain validation.
+- `src/lib/runs/attemptView.ts` (+ test) — pure `truncateForPreview`.
+
+### Modified files
+
+- `app/api/runs/[runId]/tasks/[taskId]/attempts/route.ts` — metadata-only (drop `resultText`; add derived `hasResult` and `durationMs`, clamped ≥ 0).
+- `src/lib/runs/attemptCompare.ts` (+ test) — added `resolveComparePair` (arbitrary/default pair selection).
+- `src/components/run/AttemptHistory.tsx` — rewrite: filters, two-dropdown compare, lazy full text + preview/Show full, lazy diff, error surfacing, degrade.
+- `apps/web/package.json` — registered `attemptView.test.ts`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 188 / 188 (`resolveComparePair` + `truncateForPreview` cases added).
+- `next build` — PASS (`/attempts` list + new `/attempts/[attemptId]` detail).
+- `prisma migrate status` — PASS, 4 migrations, schema clean (no migration added).
+- code-review (xhigh) hardening: the compare panel surfaces a text-fetch error instead of a perpetual "Loading diff…"; `durationMs` clamped to ≥ 0.
+- Provider-free smoke (route handlers invoked directly against existing attempt data): the list returns metadata only (no `resultText`); detail returns full text and rejects cross-run/task/attempt IDs with 404 (`task_not_found` / `attempt_not_found`); `resolveComparePair` default + arbitrary; `truncateForPreview`; a task with 0 attempts degrades.
+
+### Deferred (Phase 13/14)
+
+- Run activity timeline (retry/backoff/reset/resumed/autoresume/cancel event summary).
+- result.md / report.md / agent-reports ↔ TaskAttempt history linkage.
+- attempts pagination / `take N` for very large attempt counts; surrogate-pair-safe preview slicing.
+
+## Phase 11 — TaskAttempt History (2026-05-25)
+
+Status: Implemented, verified, and merged. Branch `phase-11-task-attempt`. Plan: `PHASE11_PLAN.md`. Commit `08c10c1`; PR #9 merged as `daa78b8`.
+
+### Approved scope (decisions)
+
+1. A new `TaskAttempt` table is the source of truth for per-task attempt history; `Task.result` stays the latest-output cache; `RunEvent` stays audit/stream. One additive migration `20260525051452_phase11_task_attempt` — no column change to `Run`/`Task` (Prisma virtual back-relations only).
+2. One `TaskAttempt` per `runOneTask` execution (transient rate_limit/timeout retries stay inside one attempt). `attemptNumber` = max+1 per task, guarded by `@@unique([taskId, attemptNumber])` (a duplicate surfaces loudly).
+3. `source` ∈ `initial | resume | rerun_from_task | auto_resume`, threaded from `executeRun`/`executeResume` and the routes/recovery.
+4. `resultText` stores the full untruncated output (same trust boundary as `Task.result`; never logged). The attempt is closed on every terminal path (done/failed/cancelled); the recovery sweep closes orphan running attempts.
+5. `GET /api/runs/[runId]/tasks/[taskId]/attempts` + a per-task `AttemptHistory` panel in `DagGraph` (timeline + latest-vs-previous diff reusing `diff.ts`); historical runs degrade. schema += 1 migration, dependency 0.
+
+### New files
+
+- `src/lib/runs/taskAttempt.ts` (+ test) — pure `nextAttemptNumber` + attempt types.
+- `src/lib/runs/attemptCompare.ts` (+ test) — pure `selectComparison`.
+- `src/lib/runs/taskAttemptStore.ts` — `openAttempt` / `closeAttempt` / `closeOrphanRunningAttempts` (DB writes).
+- `app/api/runs/[runId]/tasks/[taskId]/attempts/route.ts` — attempt list (returned `resultText` inline at this phase; made metadata-only in Phase 12).
+- `src/components/run/AttemptHistory.tsx`.
+- `prisma/migrations/20260525051452_phase11_task_attempt/`.
+
+### Modified files
+
+- `prisma/schema.prisma` — new `TaskAttempt` model + virtual relations on `Run`/`Task` (no existing columns changed).
+- `src/lib/dag/executor.ts` — `runOneTask` opens an attempt at start and closes it on every terminal path; `source` threaded through `ExecuteOptions`/`resumeInner`; executor core otherwise unchanged.
+- `src/lib/runtime/recovery.ts` — closes orphan running attempts during the sweep; passes `source:'auto_resume'` to `executeResume`.
+- `src/lib/events/types.ts` — TaskAttempt-related typing.
+- `app/api/runs/[runId]/resume/route.ts`, `.../tasks/[taskId]/retry/route.ts` — pass the attempt `source`.
+- `src/components/run/DagGraph.tsx` — renders `AttemptHistory` per task.
+- `apps/web/package.json` — registered the new pure-module tests.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 178 / 178.
+- `next build` — PASS (new `/api/runs/[runId]/tasks/[taskId]/attempts` route).
+- `prisma migrate status` — PASS, 4 migrations (1 added; additive `TaskAttempt` table only).
+- code-review (xhigh) hardening: `closeAttempt` made best-effort so an observability-write failure never strands a finished run; `openAttempt` stays loud on a duplicate `attemptNumber`.
+- Provider-backed smoke (Gemini): re-running the leaf done task produced `TaskAttempt #1`/`#2` (`source=rerun_from_task`), the latest-vs-previous diff rendered, an orphan running attempt was closed to `cancelled`, a task with no attempts degraded, and the auto-resume path recorded `source=auto_resume`.
+
+### Deferred (Phase 12+)
+
+- Large-`resultText` payload safeguards (metadata/full-text split), arbitrary two-attempt compare, and per-attempt full-text view — all delivered in Phase 12. Remaining documented limitations: a cancel-during-process-death orphan attempt edge, and the single-worker / process-local assumption for de-duplication.
+
+## Phase 10 — Auto-Resume Interrupted Runs (2026-05-25)
+
+Status: Implemented, verified, and merged. Branch `phase-10-auto-resume`. Plan: `PHASE10_PLAN.md`. Commit `3c7bba8`; PR #8 merged as `f19baa3`.
+
+### Approved scope (decisions)
+
+1. `HARNESS_AUTORESUME` gate, default OFF (opt-in; case-insensitive `1|true|yes|on`) — no automatic provider cost without opt-in.
+2. Conservative eligibility (all required): `failedReason === 'process_restart'` && an `ExecutionPlan` exists && done tasks ≥ 1 && non-done tasks ≥ 1.
+3. Reuses the existing machinery: `prepareResume({kind:'auto'}, {trigger:'process_restart'})` → `executeResume`. done tasks are reused, interrupted tasks re-run; the executor core is untouched.
+4. Additive on top of the unchanged process-restart fail sweep: the run is still marked `failed(process_restart)`, then auto-resume flips it back via `run.resumed` (with `trigger:'process_restart'`). Lazy `ensureRecovered` (no eager boot hook); the 15-minute stale cutoff is kept.
+5. On failure: no retry — leave the run failed and record `run.autoresume.failed` (benign `no_resumable_tasks` is ignored). The single-worker / process-local assumption is documented as a known limitation.
+
+### New files
+
+- `src/lib/runtime/recovery.test.ts` — pure `shouldAutoResume` cases.
+
+### Modified files
+
+- `src/lib/runtime/recovery.ts` — pure `shouldAutoResume` gate + additive `maybeAutoResume` orchestration (`prepareResume` + fire-and-forget `executeResume` with an AbortController); `run.autoresume.failed` audit; `autoResumeEnabled` env helper.
+- `src/lib/runs/resume.ts` — optional `{ trigger }` argument merged into the `run.resumed` payload (backward compatible).
+- `src/lib/events/types.ts` — `RunResumedPayload.mode` += `rerunFromTask`, added `trigger?`; documented `task.reset` / `run.autoresume.failed`.
+- `apps/web/package.json` — registered `recovery.test.ts`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS.
+- `corepack pnpm --filter web test` — PASS, 167 / 167 (`shouldAutoResume` cases added).
+- `next build` — PASS, 29 routes (no new route).
+- `prisma migrate status` — PASS, 3 migrations, schema clean (no migration added).
+- `executor.ts` untouched; no new dependency.
+- Smoke (tsx harness; Gemini for the provider-backed case): OFF regression (an eligible run is not resumed, no autoresume events); ON eligible end-to-end (the done task is reused with unchanged `startedAt`, the interrupted leaf re-runs, `run.resumed{trigger:process_restart}`, run → `succeeded`); ineligible variants (no-plan / all-done / no-done) are not resumed; the failure path emits `run.autoresume.failed` once with no retry.
+
+### Deferred (Phase 11+)
+
+- TaskAttempt persistence (delivered in Phase 11), concurrency > 1, eager boot-time resume (`instrumentation.ts`), and a cross-process claim/lock for multi-worker deployments.
 
 ## Phase 9 - Done-Task Re-run & Backoff Hardening (2026-05-25)
 
