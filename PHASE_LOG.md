@@ -47,8 +47,48 @@ Update this file at the end of each Phase.
 - Phase 11 (TaskAttempt History) implemented, verified, and merged on 2026-05-25 (branch `phase-11-task-attempt`, commit `08c10c1`, PR #9 merged as `daa78b8`). Adds a durable `TaskAttempt` table (one row per `runOneTask` execution; `source` = initial/resume/rerun_from_task/auto_resume) as the source of truth for attempt history, `GET /api/runs/[runId]/tasks/[taskId]/attempts`, and a per-task AttemptHistory panel in `DagGraph` (timeline + latest-vs-previous diff). `Task.result` stays the latest-output cache; `RunEvent` stays audit/stream. One additive migration `20260525051452_phase11_task_attempt` (no `Run`/`Task` column change), no new dependency. typecheck clean; 178 / 178 tests; `next build` PASS (new `/attempts` route); prisma migrate status 4 migrations (1 added). Plan in `PHASE11_PLAN.md`.
 - Phase 12 (Attempt History UX & Large ResultText Safeguards) implemented, verified, and merged on 2026-05-25 (branch `phase-12-attempt-ux`, commit `eda57f9`, PR #10 merged as `de7fc34`). Splits the attempts API into a metadata-only list and a lazy per-attempt full-text detail endpoint, and upgrades AttemptHistory (source/status filters, two-dropdown arbitrary compare, 2,000-char preview + "Show full text", lazy diff). No schema migration, no new dependency. typecheck clean; 188 / 188 tests; `next build` PASS (`/attempts` + new `/attempts/[attemptId]`); prisma migrate status 4 migrations (0 added). Plan in `PHASE12_PLAN.md`. Run activity timeline and report-to-TaskAttempt linkage deferred to Phase 13/14.
 - Phase 13 (Run Activity Timeline) implemented, verified, and merged on 2026-05-25 (branch `phase-13-activity-timeline`, commit `5184010`, PR #11 merged as `06013da`). Adds a chronological activity timeline to the run detail screen, built purely from the events the client already holds (`state.events`/`state.tasks`/`state.team.agents`) via the new pure `buildActivityTimeline` — no new API, no reducer change. Excludes `agent.output.delta`/`agent.output.completed`/`revision.*`/`feedback.*`; renders run/task lifecycle + control events with level styling, default collapsed (failed/cancelled runs start expanded), internal scroll, neutral fallback for unknown/legacy events. No schema migration, no new dependency. typecheck clean; 204 / 204 tests; `next build` PASS (route count unchanged); prisma migrate status 4 migrations (0 added, schema unchanged). Plan in `PHASE13_PLAN.md`. Reports↔TaskAttempt linkage deferred to Phase 14.
+- Phase 14 (Reports Attempt Summaries) implemented, verified, and merged on 2026-05-25 (branch `phase-14-reports-attempts`, commit `1ad612e`, PR #12 merged as `21bf286`). Links Phase 11 TaskAttempt history into the Phase 5 report exports (summary only): `report.md` gains a run-level Attempt summary + per-task Attempts column, and `agent-reports/{agentId}.md` gain a per-task Attempts summary section. `result.md` (deliverable) / FinalResult UI / executor are unchanged; `exportReports` includes task attempts but never selects `TaskAttempt.resultText` (counts/status/source/duration/bytes only — full-text comparison stays in the Phase 12 AttemptHistory UI). Historical runs (no attempts) degrade gracefully. No schema migration, no new dependency, no new API. typecheck clean; 213 / 213 tests; `next build` PASS (route count unchanged); prisma migrate status 4 migrations (0 added, schema unchanged). Plan in `PHASE14_PLAN.md`.
 - **Open issues carried forward** (still deferred):
   - Local Ollama compose is considered unreliable for team composition; use a paid/cloud PO model for now. Gemini support is now available for that path.
+
+## Phase 14 — Reports Attempt Summaries (2026-05-25)
+
+Status: Implemented, verified, and merged. Branch `phase-14-reports-attempts`. Plan: `PHASE14_PLAN.md`. Commit `1ad612e`; PR #12 merged as `21bf286`.
+
+### Approved scope (decisions)
+
+1. Link Phase 11 `TaskAttempt` history into the Phase 5 report exports — **summary only**. `report.md` gains a run-level "Attempt summary" + a per-task Attempts column; `agent-reports/{agentId}.md` gain a per-task Attempts summary section.
+2. `result.md` (the deliverable) is **unchanged**; `finalResult.ts` / FinalResult UI / executor are untouched. Attempt history is execution-observation info, so it lives in the report family only.
+3. `exportReports` includes task attempts in its query but **never selects `TaskAttempt.resultText`** (size + redactor-free trust boundary). Reports render summary fields only: attempt count, status-by-count, source-by-count (initial/resume/rerun_from_task/auto_resume), latest attempt status/source, failed/cancelled count, duration/resultBytes, and rerun/resume/auto_resume signals. Full-text comparison stays in the Phase 12 AttemptHistory UI.
+4. Historical runs (tasks with no attempts) degrade gracefully — no Attempts column/section, no crash; no retroactive backfill.
+5. Artifact overwrite policy unchanged: the workspace files are overwritten, the DB `Artifact` row is appended (one per export); `(runId, kind, path)` upsert / Artifact cleanup is deferred to Phase 15+.
+6. schema migration 0, dependency 0, no new API, executor logic unchanged.
+
+### New files
+
+- `src/lib/results/attemptSummary.ts` (+ test) — pure `rollupTaskAttempts(rows)` → count, statusCounts, sourceCounts, failedCount, latestStatus/Source, reran/resumed/autoResumed, totalDurationMs, latestResultBytes. No `resultText`.
+
+### Modified files
+
+- `src/lib/results/report.ts` (+ test) — `ReportTaskInput.attempts?` (optional, additive); per-task Attempts column + run-level "## Attempt summary" section (gated by `hasAnyAttempts`).
+- `src/lib/results/agentReport.ts` (+ test) — `AgentReportTaskInput.attempts?`; per-task "#### Attempts" summary section (gated by attempts presence).
+- `src/lib/results/exportReports.ts` — tasks query includes `attempts { attemptNumber, status, source, resultBytes, error, startedAt, completedAt }` (orderBy attemptNumber asc, **resultText excluded**); `mapAttempts` derives durationMs and passes summaries to both builders. writeArtifact / paths / Artifact creation unchanged.
+- `apps/web/package.json` — registered `attemptSummary.test.ts`.
+
+### Verification
+
+- `corepack pnpm --filter web typecheck` — PASS (0 errors).
+- `corepack pnpm --filter web test` — PASS, 213 / 213 (rollupTaskAttempts + report/agentReport attempt cases + historical cases added).
+- `next build` — PASS, route count unchanged (lib/results only).
+- `prisma migrate status` — PASS, 4 migrations, schema unchanged (no migration added).
+- code-review (xhigh) — no blocking findings; confirmed `resultText` never queried/rendered, `result.md`/finalResult/executor/schema/API untouched, optional `attempts?` is backward compatible.
+- Provider-free smoke (called `exportRunReports` directly): a run with rerun + auto_resume attempts produced `report.md` with the Attempt summary (`rerun_from_task · auto_resume — latest done via auto_resume`) + Attempts column, and `agent-reports/*` with per-attempt summary rows (no resultText); a historical run (0 attempts) rendered no Attempts column/section; `result.md` content and mtime were unchanged by the export.
+
+### Deferred (Phase 15+)
+
+- Artifact `(runId, kind, path)` upsert / duplicate-row cleanup.
+- Compact mode / pagination for runs with very many attempts.
+- Surfacing report.md / agent-reports in the UI (currently file-export only).
 
 ## Phase 13 — Run Activity Timeline (2026-05-25)
 
