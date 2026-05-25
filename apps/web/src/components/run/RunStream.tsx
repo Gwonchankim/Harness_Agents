@@ -9,6 +9,7 @@ import { RetryRunButton } from '@/components/runs/RetryRunButton';
 import { AgentReportPane } from './AgentReportPane';
 import { ResumeRunButton } from './ResumeRunButton';
 import { DagGraph } from './DagGraph';
+import { RunActivityTimeline } from './RunActivityTimeline';
 import { RunProgressOverlay, type RunProgressStage } from './RunProgressOverlay';
 
 interface InitialAgent {
@@ -630,6 +631,13 @@ export function RunStream({ runId, initial }: Props) {
         />
 
         <FinalResultPane finalResult={state.finalResult} status={state.status} runId={runId} />
+
+        <RunActivityTimeline
+          events={state.events}
+          tasks={state.tasks}
+          agents={state.team.agents}
+          runStatus={state.status}
+        />
 
         <AgentReportPane
           tasks={state.tasks}
