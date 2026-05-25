@@ -44,7 +44,7 @@ export async function POST(
 
   const controller = new AbortController();
   registerRunController(runId, controller);
-  void executeResume(runId, { signal: controller.signal })
+  void executeResume(runId, { signal: controller.signal, source: 'rerun_from_task' })
     .catch((err) => {
       console.error(`executeResume threw for runId=${runId}:`, err);
     })

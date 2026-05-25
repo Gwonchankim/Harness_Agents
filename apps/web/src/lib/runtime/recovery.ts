@@ -20,6 +20,7 @@ import { executeResume } from '@lib/dag/executor';
 import { clearRunController, registerRunController } from '@lib/dag/runRegistry';
 import { appendEvent } from '@lib/events/append';
 import { isResumeError, prepareResume } from '@lib/runs/resume';
+import { closeOrphanRunningAttempts } from '@lib/runs/taskAttemptStore';
 
 let recovered: Promise<void> | null = null;
 
@@ -93,6 +94,13 @@ async function recoverInterruptedRuns(): Promise<void> {
       console.error('recovery_append_event_failed:', err);
     }
 
+    // Phase 11: close any TaskAttempt a dead process left `running` for this run.
+    try {
+      await closeOrphanRunningAttempts(r.id);
+    } catch (err) {
+      console.error('recovery_close_orphan_attempts_failed:', err);
+    }
+
     // Phase 10: the run is now failed(process_restart). If enabled, auto-resume
     // eligible runs as a purely additive step on top of the unchanged fail path.
     if (autoResume) {
@@ -139,7 +147,7 @@ async function maybeAutoResume(runId: string): Promise<void> {
   // Fire-and-forget the resume executor, mirroring the /resume route.
   const controller = new AbortController();
   registerRunController(runId, controller);
-  void executeResume(runId, { signal: controller.signal })
+  void executeResume(runId, { signal: controller.signal, source: 'auto_resume' })
     .catch(async (err) => {
       console.error(`auto-resume executeResume threw for runId=${runId}:`, err);
       // Defensive: if the executor escaped without settling the run, leave it failed.

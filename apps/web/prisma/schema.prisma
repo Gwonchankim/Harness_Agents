@@ -147,6 +147,7 @@ model Run {
   artifacts        Artifact[]
   feedbackBatches  FeedbackBatch[]
   sourcedRevisions TeamRevision[]  @relation("RunSourcedRevisions")
+  taskAttempts     TaskAttempt[]
 
   @@index([projectId])
   @@index([teamId])
@@ -246,12 +247,42 @@ model Task {
   toolCalls ToolCall[]
   artifacts Artifact[]
   events    RunEvent[]
+  attempts  TaskAttempt[]
 
   @@unique([planId, taskKey])
   @@index([runId])
   @@index([planId])
   @@index([agentId])
   @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// TaskAttempt (Phase 11) — durable per-attempt history. One row per runOneTask
+// execution. Source of truth for attempt history; Task.result remains the latest
+// output cache. resultText is the full untruncated output (not redactor-guarded,
+// same trust boundary as Task.result) — do not log/expose externally.
+// ---------------------------------------------------------------------------
+
+model TaskAttempt {
+  id            String    @id @default(cuid())
+  taskId        String
+  runId         String
+  attemptNumber Int       // 1-indexed per task; computed max+1, guarded by @@unique
+  status        String    @default("running") // running | done | failed | cancelled
+  source        String    // initial | resume | rerun_from_task | auto_resume
+  resultText    String?   // full task output text on success (source of truth)
+  resultBytes   Int?
+  error         String?   // redacted error summary on failure
+  startedAt     DateTime
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  run  Run  @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([taskId, attemptNumber])
+  @@index([taskId])
+  @@index([runId])
 }
 
 // ---------------------------------------------------------------------------

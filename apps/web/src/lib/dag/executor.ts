@@ -18,6 +18,8 @@ import {
 import { runAgentTask } from '@lib/agents/worker';
 import { classifyGenerateError } from '@lib/agents/providerError';
 import { nextBackoff } from '@lib/runs/backoffPolicy';
+import { closeAttempt, openAttempt } from '@lib/runs/taskAttemptStore';
+import type { AttemptSource } from '@lib/runs/taskAttempt';
 import { topoSort } from './topo';
 import { appendEvent } from '@lib/events/append';
 import { buildHistoryLines, loadSession } from '@lib/qa/sessionState';
@@ -50,6 +52,8 @@ export interface ExecuteOptions {
   /** MVP only honors 1; future Phase 4.x will accept >1. */
   concurrency?: number;
   signal?: AbortSignal;
+  /** Phase 11: provenance recorded on each TaskAttempt this execution opens. */
+  source?: AttemptSource;
 }
 
 /**
@@ -88,13 +92,17 @@ export async function executeResume(runId: string, opts: ExecuteOptions = {}): P
   if (inFlight.has(runId)) return;
   inFlight.add(runId);
   try {
-    await resumeInner(runId, opts.signal);
+    await resumeInner(runId, opts.signal, opts.source ?? 'resume');
   } finally {
     inFlight.delete(runId);
   }
 }
 
-async function resumeInner(runId: string, signal?: AbortSignal): Promise<void> {
+async function resumeInner(
+  runId: string,
+  signal: AbortSignal | undefined,
+  source: AttemptSource,
+): Promise<void> {
   const run = await prisma.run.findUnique({
     where: { id: runId },
     select: {
@@ -191,6 +199,7 @@ async function resumeInner(runId: string, signal?: AbortSignal): Promise<void> {
       taskNodes,
       taskResults,
       task: t,
+      source,
       signal,
     });
     if (outcome === 'aborted') return;
@@ -441,6 +450,7 @@ async function executeInner(runId: string, signal?: AbortSignal): Promise<void> 
       taskNodes,
       taskResults,
       task: t,
+      source: 'initial',
       signal,
     });
     if (outcome === 'aborted') return; // cancel.ts owns the cancelled terminal state
@@ -608,21 +618,28 @@ interface RunOneTaskCtx {
   taskNodes: readonly ExecTaskNode[];
   taskResults: Map<string, string>;
   task: ExecTaskNode;
+  source: AttemptSource;
   signal?: AbortSignal;
 }
 
 type RunOneTaskOutcome = 'done' | 'failed' | 'aborted';
 
 async function runOneTask(ctx: RunOneTaskCtx): Promise<RunOneTaskOutcome> {
-  const { runId, task: t, taskNodes, taskResults, agents, signal } = ctx;
+  const { runId, task: t, taskNodes, taskResults, agents, signal, source } = ctx;
+
+  // Phase 11: one TaskAttempt per runOneTask execution. Transient retries below
+  // stay within this attempt; every terminal path closes it.
+  const attempt = await openAttempt({ runId, taskId: t.id, source });
 
   const ag = agents.find((a) => a.id === t.agentId);
   if (!ag) {
+    await closeAttempt(attempt.id, { status: 'failed', error: `agent_not_found:${t.taskKey}` });
     await markTaskFailed(runId, t.id, null, t.taskKey, `agent_not_found:${t.taskKey}`, 0);
     return 'failed';
   }
   const provider = resolveProviderName(ag.provider);
   if (!provider) {
+    await closeAttempt(attempt.id, { status: 'failed', error: `unknown_provider:${ag.provider}` });
     await markTaskFailed(runId, t.id, ag.id, t.taskKey, `unknown_provider:${ag.provider}`, 0);
     return 'failed';
   }
@@ -693,6 +710,7 @@ async function runOneTask(ctx: RunOneTaskCtx): Promise<RunOneTaskOutcome> {
         where: { id: t.id },
         data: { status: 'done', result: stringifyJson({ text, bytes }), completedAt: new Date() },
       });
+      await closeAttempt(attempt.id, { status: 'done', resultText: text, resultBytes: bytes });
       await appendEvent({
         runId,
         taskId: t.id,
@@ -709,7 +727,10 @@ async function runOneTask(ctx: RunOneTaskCtx): Promise<RunOneTaskOutcome> {
       });
       return 'done';
     } catch (err) {
-      if (signal?.aborted) return 'aborted'; // cancel.ts owns the cancelled terminal state
+      if (signal?.aborted) {
+        await closeAttempt(attempt.id, { status: 'cancelled' });
+        return 'aborted'; // cancel.ts owns the cancelled terminal state
+      }
       attempts += 1;
       const classification = classifyGenerateError(err);
       const { kind, retryAfterMs } = classification;
@@ -730,7 +751,10 @@ async function runOneTask(ctx: RunOneTaskCtx): Promise<RunOneTaskOutcome> {
           },
         });
         const abortedDuringWait = await abortableDelay(delayMs, signal);
-        if (abortedDuringWait) return 'aborted';
+        if (abortedDuringWait) {
+          await closeAttempt(attempt.id, { status: 'cancelled' });
+          return 'aborted';
+        }
         continue;
       }
       const durationMs = Date.now() - taskStartedAt;
@@ -739,6 +763,7 @@ async function runOneTask(ctx: RunOneTaskCtx): Promise<RunOneTaskOutcome> {
         where: { id: t.id },
         data: { status: 'failed', error: errorMsg, completedAt: new Date() },
       });
+      await closeAttempt(attempt.id, { status: 'failed', error: errorMsg });
       await appendEvent({
         runId,
         taskId: t.id,
