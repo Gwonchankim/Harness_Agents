@@ -41,3 +41,43 @@ export function selectLatestArtifacts(rows: readonly ArtifactRow[]): ArtifactRow
     return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
   });
 }
+
+export interface ArtifactHistoryGroup {
+  kind: string;
+  path: string;
+  latest: ArtifactRow;
+  versions: ArtifactRow[]; // all rows for (kind, path), newest first
+}
+
+/**
+ * Phase 16: group append-only rows by (kind, path) into a creation history.
+ * Within each group `versions` is sorted newest-first (createdAt desc, id
+ * tiebreak — same ordering as selectLatestArtifacts), and `latest` is
+ * versions[0]. Groups are returned in the same display order as
+ * selectLatestArtifacts. Pure / prisma-free for unit testing.
+ *
+ * Note: only the latest version's file survives on disk (writers overwrite the
+ * same path), so past versions are audit metadata only — their content is not
+ * recoverable.
+ */
+export function groupArtifactHistory(rows: readonly ArtifactRow[]): ArtifactHistoryGroup[] {
+  const groups = new Map<string, ArtifactRow[]>();
+  for (const r of rows) {
+    const key = `${r.kind} ${r.path}`;
+    const arr = groups.get(key);
+    if (arr) arr.push(r);
+    else groups.set(key, [r]);
+  }
+  const out: ArtifactHistoryGroup[] = [];
+  for (const versions of groups.values()) {
+    versions.sort((a, b) => (isNewer(a, b) ? -1 : isNewer(b, a) ? 1 : 0));
+    const latest = versions[0];
+    if (!latest) continue;
+    out.push({ kind: latest.kind, path: latest.path, latest, versions });
+  }
+  return out.sort((a, b) => {
+    const ko = kindOrder(a.kind) - kindOrder(b.kind);
+    if (ko !== 0) return ko;
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  });
+}

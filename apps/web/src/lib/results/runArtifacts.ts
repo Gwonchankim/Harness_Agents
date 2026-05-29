@@ -6,7 +6,11 @@
 
 import { prisma } from '@db/client';
 
-import { selectLatestArtifacts, type ArtifactRow } from './artifactList';
+import {
+  groupArtifactHistory,
+  selectLatestArtifacts,
+  type ArtifactRow,
+} from './artifactList';
 
 export interface ArtifactMeta {
   id: string;
@@ -36,5 +40,46 @@ export async function loadRunArtifacts(runId: string): Promise<ArtifactMeta[]> {
     path: r.path,
     bytes: r.bytes,
     createdAt: r.createdAt,
+  }));
+}
+
+export interface ArtifactVersion {
+  id: string;
+  bytes: number;
+  sha256: string | null;
+  createdAt: string; // ISO
+  latest: boolean;
+}
+
+// Phase 16: append-only creation history for one (kind, path) within a run,
+// metadata only — newest first. Past versions are audit records: writers
+// overwrite the same disk path, so only the latest version's file still exists
+// (file content is never read here). Used by the lazy history toggle.
+export async function loadArtifactHistory(
+  runId: string,
+  kind: string,
+  path: string,
+): Promise<ArtifactVersion[]> {
+  const rows = await prisma.artifact.findMany({
+    where: { runId, kind, path },
+    select: { id: true, kind: true, path: true, bytes: true, sha256: true, createdAt: true, taskId: true },
+  });
+  const mapped: ArtifactRow[] = rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    path: r.path,
+    bytes: r.bytes,
+    sha256: r.sha256,
+    createdAt: r.createdAt.toISOString(),
+    taskId: r.taskId,
+  }));
+  const group = groupArtifactHistory(mapped)[0];
+  if (!group) return [];
+  return group.versions.map((v) => ({
+    id: v.id,
+    bytes: v.bytes,
+    sha256: v.sha256,
+    createdAt: v.createdAt,
+    latest: v.id === group.latest.id,
   }));
 }
