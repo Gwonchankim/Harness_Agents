@@ -62,6 +62,23 @@ interface DownloadState {
   error?: string;
 }
 
+// Phase 20: opt-in full RunEvent link audit (read-only, authoritative).
+interface AuditData {
+  summary: {
+    totalGroups: number;
+    cleanupCandidateRows: number;
+    affectedGroups: number;
+    fullAuditLinkedEvents: number;
+  };
+  groups: { kind: string; path: string; candidateCount: number; linkedEventsAffected: number }[];
+}
+
+interface AuditState {
+  loading?: boolean;
+  data?: AuditData;
+  error?: string;
+}
+
 const KIND_LABELS: Record<string, string> = {
   result_md: 'Deliverable',
   report_md: 'Run report',
@@ -120,6 +137,7 @@ export function RunExportsPane({
   const [histories, setHistories] = useState<Record<string, HistoryState>>({});
   const [downloads, setDownloads] = useState<Record<string, DownloadState>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [audit, setAudit] = useState<AuditState>({});
 
   if (artifacts.length === 0) return null;
 
@@ -228,6 +246,24 @@ export function RunExportsPane({
       setTimeout(() => setCopiedId((cur) => (cur === id ? null : cur)), 1500);
     } catch {
       /* clipboard unavailable; ignore */
+    }
+  }
+
+  // Phase 20: opt-in, read-only full link audit. Fetches the authoritative
+  // server-side count (not just loaded/visible). No mutation, no cleanup.
+  async function loadAudit() {
+    if (audit.loading || audit.data) return;
+    setAudit({ loading: true });
+    try {
+      const res = await fetch(`/api/runs/${runId}/artifacts/cleanup-audit`, { cache: 'no-store' });
+      const data = (await res.json().catch(() => ({}))) as Partial<AuditData> & { error?: string };
+      if (!res.ok || !data.summary) {
+        setAudit({ error: data.error ?? `HTTP ${res.status}` });
+        return;
+      }
+      setAudit({ data: data as AuditData });
+    } catch (e) {
+      setAudit({ error: e instanceof Error ? e.message : String(e) });
     }
   }
 
@@ -437,6 +473,24 @@ export function RunExportsPane({
                 : ''}
               . A future cleanup would collapse history to latest-only; represented bytes are past
               metadata, not reclaimable disk.
+            </div>
+          ) : null}
+          <div className="flex flex-wrap items-baseline gap-x-2">
+            <button
+              type="button"
+              onClick={() => void loadAudit()}
+              disabled={audit.loading || audit.data !== undefined}
+              className="rounded border border-current/30 px-1.5 py-0.5 hover:bg-current/5 disabled:opacity-50"
+            >
+              {audit.loading ? 'auditing…' : audit.data ? 'full audit loaded' : 'run full link audit'}
+            </button>
+            {audit.error ? <span className="text-rose-600">Audit error: {audit.error}</span> : null}
+          </div>
+          {audit.data ? (
+            <div className="opacity-50">
+              Loaded links: {cleanup.loadedLinkedEventsAffected} · Full audit links:{' '}
+              {audit.data.summary.fullAuditLinkedEvents}. These links would be set to null by a future
+              cleanup. RunEvent links only apply to result artifacts today.
             </div>
           ) : null}
           {runOutputs.length > 0 ? (
