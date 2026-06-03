@@ -81,6 +81,10 @@ export async function GET(
       type: e.type,
       taskId: e.taskId,
       agentId: e.agentId,
+      // Phase 19 (additive): expose the existing RunEvent.artifactId (already on
+      // the fetched row; no select/query change) so the client can show a
+      // dry-run cleanup planner's "loaded event links" signal. Optional field.
+      artifactId: e.artifactId,
       payload: parseJson<unknown>(e.payload, {}),
       createdAt: e.createdAt.toISOString(),
     })),

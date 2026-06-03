@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useReducer, useState } from 'react';
+import { useEffect, useMemo, useReducer, useState } from 'react';
 
 import { classifyFailure } from '@lib/runs/failureClass';
 
@@ -41,6 +41,10 @@ interface InitialEvent {
   type: string;
   taskId: string | null;
   agentId: string | null;
+  // Phase 19 (additive): only the state-route (polling) path populates this;
+  // SSE/initial events omit it. Used for the dry-run planner's "loaded event
+  // links" signal — hence the deliberately limited wording in the UI.
+  artifactId?: string | null;
   payload: unknown;
   createdAt: string;
 }
@@ -288,6 +292,16 @@ function initialReducerState(initial: InitialState): State {
 
 export function RunStream({ runId, initial }: Props) {
   const [state, dispatch] = useReducer(reducer, initial, initialReducerState);
+  // Phase 19: artifact ids referenced by loaded RunEvent links (polling path
+  // populates artifactId; SSE/initial omit it). Memoized so unrelated re-renders
+  // don't rebuild the Set over up to 1000 events.
+  const loadedLinkedArtifactIds = useMemo(
+    () =>
+      new Set(
+        state.events.map((e) => e.artifactId).filter((x): x is string => typeof x === 'string'),
+      ),
+    [state.events],
+  );
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [modelEdits, setModelEdits] = useState<Record<string, string>>(() =>
@@ -643,7 +657,12 @@ export function RunStream({ runId, initial }: Props) {
 
         <FinalResultPane finalResult={state.finalResult} status={state.status} runId={runId} />
 
-        <RunExportsPane runId={runId} artifacts={state.artifacts} agents={state.team.agents} />
+        <RunExportsPane
+          runId={runId}
+          artifacts={state.artifacts}
+          agents={state.team.agents}
+          loadedLinkedArtifactIds={loadedLinkedArtifactIds}
+        />
 
         <RunActivityTimeline
           events={state.events}
