@@ -29,6 +29,7 @@ interface ContentState {
   missing?: boolean;
   truncated?: boolean;
   totalChars?: number;
+  totalBytes?: number;
   error?: string;
 }
 
@@ -43,6 +44,11 @@ interface ArtifactVersion {
 interface HistoryState {
   loading?: boolean;
   versions?: ArtifactVersion[];
+  error?: string;
+}
+
+interface DownloadState {
+  loading?: boolean;
   error?: string;
 }
 
@@ -97,6 +103,7 @@ export function RunExportsPane({
   const [contents, setContents] = useState<Record<string, ContentState>>({});
   const [historyOpen, setHistoryOpen] = useState<Set<string>>(new Set());
   const [histories, setHistories] = useState<Record<string, HistoryState>>({});
+  const [downloads, setDownloads] = useState<Record<string, DownloadState>>({});
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   if (artifacts.length === 0) return null;
@@ -117,6 +124,7 @@ export function RunExportsPane({
         missing?: boolean;
         truncated?: boolean;
         totalChars?: number;
+        totalBytes?: number;
         error?: string;
       };
       if (!res.ok) {
@@ -133,6 +141,7 @@ export function RunExportsPane({
           content: data.content ?? '',
           truncated: data.truncated ?? false,
           totalChars: data.totalChars,
+          totalBytes: data.totalBytes,
         },
       }));
     } catch (e) {
@@ -203,6 +212,50 @@ export function RunExportsPane({
     }
   }
 
+  // Fetch-based download so a missing-file 404 (JSON) surfaces as an inline row
+  // error instead of opening in a throwaway tab. On success the blob is saved via
+  // a transient object URL that is revoked immediately after the click.
+  async function downloadFile(a: ArtifactMeta) {
+    if (downloads[a.id]?.loading) return;
+    setDownloads((prev) => ({ ...prev, [a.id]: { loading: true } }));
+    try {
+      const res = await fetch(`/api/runs/${runId}/artifacts/${a.id}/download`, {
+        cache: 'no-store',
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        setDownloads((prev) => ({
+          ...prev,
+          [a.id]: { error: data.error ?? `HTTP ${res.status}` },
+        }));
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      try {
+        const el = document.createElement('a');
+        el.href = url;
+        el.download = rowName(a, agentNameById);
+        document.body.appendChild(el);
+        el.click();
+        el.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      // Clear transient state on success.
+      setDownloads((prev) => {
+        const n = { ...prev };
+        delete n[a.id];
+        return n;
+      });
+    } catch (e) {
+      setDownloads((prev) => ({
+        ...prev,
+        [a.id]: { error: e instanceof Error ? e.message : String(e) },
+      }));
+    }
+  }
+
   function renderRow(a: ArtifactMeta) {
     const c = contents[a.id];
     const isExpanded = expanded.has(a.id);
@@ -216,17 +269,14 @@ export function RunExportsPane({
           <span className="opacity-60">{formatBytes(a.bytes)}</span>
           <span className="opacity-50">{new Date(a.createdAt).toLocaleString()}</span>
           <span className="ml-auto flex items-center gap-2">
-            <a
-              href={`/api/runs/${runId}/artifacts/${a.id}/download`}
-              download
-              // Open in a throwaway tab so a missing-file 404 (JSON) never
-              // replaces the run page; a present file still downloads inline.
-              target="_blank"
-              rel="noopener"
-              className="rounded border border-current/30 px-1.5 py-0.5 hover:bg-current/5"
+            <button
+              type="button"
+              onClick={() => downloadFile(a)}
+              disabled={downloads[a.id]?.loading}
+              className="rounded border border-current/30 px-1.5 py-0.5 hover:bg-current/5 disabled:opacity-50"
             >
-              download
-            </a>
+              {downloads[a.id]?.loading ? 'downloading…' : 'download'}
+            </button>
             <button
               type="button"
               onClick={() => copyPath(a.id, a.path)}
@@ -251,6 +301,9 @@ export function RunExportsPane({
           </span>
         </div>
         <div className="mt-1 font-mono opacity-50">{a.path}</div>
+        {downloads[a.id]?.error ? (
+          <div className="mt-1 text-rose-600">Download failed: {downloads[a.id]?.error}</div>
+        ) : null}
         {isHistoryOpen ? (
           <div className="mt-1 rounded-md border border-current/15 p-2">
             {h?.loading ? <span className="opacity-60">Loading history…</span> : null}
@@ -298,8 +351,13 @@ export function RunExportsPane({
                 </pre>
                 {c.truncated ? (
                   <p className="opacity-60">
-                    Preview truncated{c.totalChars != null ? ` (${c.totalChars} chars total)` : ''}. Open
-                    the file at the path above to read the rest.
+                    Preview truncated
+                    {c.totalBytes != null
+                      ? ` (${formatBytes(c.totalBytes)} total)`
+                      : c.totalChars != null
+                        ? ` (${c.totalChars} chars total)`
+                        : ''}
+                    . Open the file at the path above to read the rest.
                   </p>
                 ) : null}
               </div>

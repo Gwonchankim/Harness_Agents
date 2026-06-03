@@ -12,6 +12,14 @@ import {
   type ArtifactRow,
 } from './artifactList';
 
+// Phase 17: defensive upper bounds on artifact row fetches. Both queries sort
+// newest-first and take a cap so a pathological run (thousands of re-exports)
+// cannot load an unbounded result set. Rows are append-only and the in-memory
+// helpers re-sort, so desc+take keeps the newest N — current dev.db tops out at
+// 7 versions per (kind, path), far under these caps.
+const RUN_ARTIFACTS_MAX = 1000;
+const HISTORY_MAX = 200;
+
 export interface ArtifactMeta {
   id: string;
   kind: string;
@@ -23,6 +31,8 @@ export interface ArtifactMeta {
 export async function loadRunArtifacts(runId: string): Promise<ArtifactMeta[]> {
   const rows = await prisma.artifact.findMany({
     where: { runId },
+    orderBy: { createdAt: 'desc' },
+    take: RUN_ARTIFACTS_MAX,
     select: { id: true, kind: true, path: true, bytes: true, sha256: true, createdAt: true, taskId: true },
   });
   const mapped: ArtifactRow[] = rows.map((r) => ({
@@ -62,6 +72,8 @@ export async function loadArtifactHistory(
 ): Promise<ArtifactVersion[]> {
   const rows = await prisma.artifact.findMany({
     where: { runId, kind, path },
+    orderBy: { createdAt: 'desc' },
+    take: HISTORY_MAX,
     select: { id: true, kind: true, path: true, bytes: true, sha256: true, createdAt: true, taskId: true },
   });
   const mapped: ArtifactRow[] = rows.map((r) => ({
