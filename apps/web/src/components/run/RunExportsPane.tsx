@@ -11,6 +11,7 @@
 import { useState } from 'react';
 
 import { summarizeRedundancy } from '@lib/results/artifactStats';
+import { planGroupCleanup, summarizeCleanupPlan } from '@lib/results/artifactCleanupPlan';
 
 export interface ArtifactMeta {
   id: string;
@@ -23,6 +24,8 @@ export interface ArtifactMeta {
   redundantCount?: number;
   sameContentCount?: number;
   changedVersionCount?: number;
+  // Phase 19 (additive): summed bytes of the non-latest rows (DB metadata only).
+  representedHistoricalBytes?: number;
 }
 
 export interface ExportsAgent {
@@ -100,10 +103,15 @@ export function RunExportsPane({
   runId,
   artifacts,
   agents,
+  loadedLinkedArtifactIds,
 }: {
   runId: string;
   artifacts: ArtifactMeta[];
   agents: ExportsAgent[];
+  // Phase 19 (additive): artifact ids referenced by RunEvent links currently
+  // loaded on the client (polling path only). Used for the dry-run planner's
+  // "loaded event links" signal; absent for SSE-only loads.
+  loadedLinkedArtifactIds?: ReadonlySet<string>;
 }) {
   const [open, setOpen] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -120,6 +128,8 @@ export function RunExportsPane({
   const teamFiles = artifacts.filter((a) => !RUN_OUTPUT_KINDS.has(a.kind));
   // Phase 18: non-destructive redundancy overview from the metadata already in props.
   const redundancy = summarizeRedundancy(artifacts);
+  // Phase 19: read-only dry-run cleanup preview (no changes are ever made here).
+  const cleanup = summarizeCleanupPlan(artifacts, loadedLinkedArtifactIds);
 
   async function loadContent(id: string) {
     if (contents[id]?.content !== undefined || contents[id]?.missing || contents[id]?.loading) {
@@ -270,6 +280,8 @@ export function RunExportsPane({
     const isExpanded = expanded.has(a.id);
     const isHistoryOpen = historyOpen.has(a.id);
     const h = histories[a.id];
+    // Phase 19: read-only dry-run plan for this group's loaded history versions.
+    const cleanupPreview = h?.versions ? planGroupCleanup(h.versions, loadedLinkedArtifactIds) : null;
     return (
       <li key={a.id} className="rounded border border-current/15 p-2">
         <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
@@ -327,6 +339,20 @@ export function RunExportsPane({
             {h?.error ? <span className="text-rose-600">{h.error}</span> : null}
             {h?.versions !== undefined ? (
               <div className="space-y-1">
+                {cleanupPreview && cleanupPreview.olderRows > 0 ? (
+                  <p className="opacity-60">
+                    Cleanup preview (no changes made): keep latest · {cleanupPreview.olderRows} older
+                    metadata rows · {formatBytes(cleanupPreview.representedHistoricalBytes)} represented
+                    historical bytes
+                    {cleanupPreview.changedVersions != null
+                      ? ` · ${cleanupPreview.sameContentRows} same-content, ${cleanupPreview.changedVersions} changed`
+                      : ''}
+                    {cleanupPreview.loadedLinkedEventsAffected > 0
+                      ? ` · ${cleanupPreview.loadedLinkedEventsAffected} loaded event links would be nulled`
+                      : ''}
+                    . A future cleanup would collapse this group to latest-only.
+                  </p>
+                ) : null}
                 <p className="opacity-60">
                   Creation history (newest first). Each re-export appends a record; only the latest
                   version&apos;s file is kept on disk, so past versions are metadata only — their
@@ -401,6 +427,18 @@ export function RunExportsPane({
             {redundancy.groups} files · {redundancy.totalVersions} versions · {redundancy.redundant}{' '}
             redundant ({redundancy.redundancyPct}%)
           </div>
+          {cleanup.cleanupCandidateRows > 0 ? (
+            <div className="opacity-50">
+              Cleanup preview (no changes made): {cleanup.cleanupCandidateRows} older metadata rows in{' '}
+              {cleanup.affectedGroups} groups · {formatBytes(cleanup.representedHistoricalBytes)}{' '}
+              represented historical bytes
+              {cleanup.loadedLinkedEventsAffected > 0
+                ? ` · ${cleanup.loadedLinkedEventsAffected} loaded event links would be nulled`
+                : ''}
+              . A future cleanup would collapse history to latest-only; represented bytes are past
+              metadata, not reclaimable disk.
+            </div>
+          ) : null}
           {runOutputs.length > 0 ? (
             <div className="space-y-1">
               <div className="uppercase tracking-wide opacity-50">Run outputs</div>

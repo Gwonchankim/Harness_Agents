@@ -35,6 +35,11 @@ export interface ArtifactMeta {
   redundantCount?: number;
   sameContentCount?: number;
   changedVersionCount?: number;
+  // Phase 19 (additive, non-destructive): summed bytes of the NON-latest rows in
+  // this (kind, path) group — the "represented historical bytes" a dry-run
+  // cleanup would drop from DB metadata. NOT reclaimable disk (past files are
+  // already overwritten). Computed from the rows already fetched (no extra query).
+  representedHistoricalBytes?: number;
 }
 
 export async function loadRunArtifacts(runId: string): Promise<ArtifactMeta[]> {
@@ -56,8 +61,17 @@ export async function loadRunArtifacts(runId: string): Promise<ArtifactMeta[]> {
   // Version stats are computed from the SAME rows already fetched above (no
   // extra query); the run loader stays read-only — rows are never mutated.
   const stats = countVersionsByGroup(mapped);
+  // Per-group total bytes (also from the already-fetched rows) so we can derive
+  // representedHistoricalBytes = group total − latest row bytes (= Σ non-latest).
+  const totalBytesByGroup = new Map<string, number>();
+  for (const row of mapped) {
+    const key = `${row.kind} ${row.path}`;
+    totalBytesByGroup.set(key, (totalBytesByGroup.get(key) ?? 0) + row.bytes);
+  }
   return selectLatestArtifacts(mapped).map((r) => {
-    const s = stats.get(`${r.kind} ${r.path}`);
+    const key = `${r.kind} ${r.path}`;
+    const s = stats.get(key);
+    const groupTotalBytes = totalBytesByGroup.get(key) ?? r.bytes;
     return {
       id: r.id,
       kind: r.kind,
@@ -68,6 +82,7 @@ export async function loadRunArtifacts(runId: string): Promise<ArtifactMeta[]> {
       redundantCount: s?.redundantCount ?? 0,
       sameContentCount: s?.sameContentCount,
       changedVersionCount: s?.changedVersionCount,
+      representedHistoricalBytes: Math.max(0, groupTotalBytes - r.bytes),
     };
   });
 }
