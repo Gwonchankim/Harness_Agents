@@ -10,12 +10,19 @@
 
 import { useState } from 'react';
 
+import { summarizeRedundancy } from '@lib/results/artifactStats';
+
 export interface ArtifactMeta {
   id: string;
   kind: string;
   path: string;
   bytes: number;
   createdAt: string; // ISO
+  // Phase 18 (additive): append-only version stats for this (kind, path) group.
+  versionCount?: number;
+  redundantCount?: number;
+  sameContentCount?: number;
+  changedVersionCount?: number;
 }
 
 export interface ExportsAgent {
@@ -111,6 +118,8 @@ export function RunExportsPane({
   const agentNameById = new Map(agents.map((x) => [x.id, x.name] as const));
   const runOutputs = artifacts.filter((a) => RUN_OUTPUT_KINDS.has(a.kind));
   const teamFiles = artifacts.filter((a) => !RUN_OUTPUT_KINDS.has(a.kind));
+  // Phase 18: non-destructive redundancy overview from the metadata already in props.
+  const redundancy = summarizeRedundancy(artifacts);
 
   async function loadContent(id: string) {
     if (contents[id]?.content !== undefined || contents[id]?.missing || contents[id]?.loading) {
@@ -301,6 +310,14 @@ export function RunExportsPane({
           </span>
         </div>
         <div className="mt-1 font-mono opacity-50">{a.path}</div>
+        {a.versionCount != null && a.versionCount > 1 ? (
+          <div className="mt-0.5 opacity-50">
+            {a.versionCount} versions · {a.redundantCount ?? a.versionCount - 1} redundant (metadata only)
+            {a.sameContentCount != null && a.sameContentCount > 0
+              ? ` · ${a.sameContentCount} same content`
+              : ''}
+          </div>
+        ) : null}
         {downloads[a.id]?.error ? (
           <div className="mt-1 text-rose-600">Download failed: {downloads[a.id]?.error}</div>
         ) : null}
@@ -380,6 +397,10 @@ export function RunExportsPane({
 
       {open ? (
         <div className="space-y-3 text-xs">
+          <div className="uppercase tracking-wide opacity-50">
+            {redundancy.groups} files · {redundancy.totalVersions} versions · {redundancy.redundant}{' '}
+            redundant ({redundancy.redundancyPct}%)
+          </div>
           {runOutputs.length > 0 ? (
             <div className="space-y-1">
               <div className="uppercase tracking-wide opacity-50">Run outputs</div>

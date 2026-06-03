@@ -11,6 +11,7 @@ import {
   selectLatestArtifacts,
   type ArtifactRow,
 } from './artifactList';
+import { countVersionsByGroup } from './artifactStats';
 
 // Phase 17: defensive upper bounds on artifact row fetches. Both queries sort
 // newest-first and take a cap so a pathological run (thousands of re-exports)
@@ -26,6 +27,14 @@ export interface ArtifactMeta {
   path: string;
   bytes: number;
   createdAt: string; // ISO
+  // Phase 18 (additive, non-destructive visibility): append-only version stats
+  // for this (kind, path) group. versionCount counts all rows; redundantCount =
+  // max(0, versionCount - 1). The sha256 breakdown is present only when the
+  // group has ≥1 non-null sha256.
+  versionCount?: number;
+  redundantCount?: number;
+  sameContentCount?: number;
+  changedVersionCount?: number;
 }
 
 export async function loadRunArtifacts(runId: string): Promise<ArtifactMeta[]> {
@@ -44,13 +53,23 @@ export async function loadRunArtifacts(runId: string): Promise<ArtifactMeta[]> {
     createdAt: r.createdAt.toISOString(),
     taskId: r.taskId,
   }));
-  return selectLatestArtifacts(mapped).map((r) => ({
-    id: r.id,
-    kind: r.kind,
-    path: r.path,
-    bytes: r.bytes,
-    createdAt: r.createdAt,
-  }));
+  // Version stats are computed from the SAME rows already fetched above (no
+  // extra query); the run loader stays read-only — rows are never mutated.
+  const stats = countVersionsByGroup(mapped);
+  return selectLatestArtifacts(mapped).map((r) => {
+    const s = stats.get(`${r.kind} ${r.path}`);
+    return {
+      id: r.id,
+      kind: r.kind,
+      path: r.path,
+      bytes: r.bytes,
+      createdAt: r.createdAt,
+      versionCount: s?.versionCount ?? 1,
+      redundantCount: s?.redundantCount ?? 0,
+      sameContentCount: s?.sameContentCount,
+      changedVersionCount: s?.changedVersionCount,
+    };
+  });
 }
 
 export interface ArtifactVersion {
